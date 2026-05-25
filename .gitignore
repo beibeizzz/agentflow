@@ -1,0 +1,4 @@
+# Large local model artifacts
+/model/
+/models/
+/model_3b/
