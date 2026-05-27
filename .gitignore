@@ -1,4 +1,41 @@
-# Large local model artifacts
+# Models and weights
 /model/
 /models/
+/local_model/*
+!/local_model/run_vllm.txt
 /model_3b/
+*.safetensors
+*.bin
+
+# Execution logs and results
+logs/
+results/
+summary/
+solver_cache/
+*.log
+
+# Data
+data/
+dataset/
+*.parquet
+*.jsonl
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# OS/IDE
+.vscode/
+.idea/
+.DS_Store
