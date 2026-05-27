@@ -213,14 +213,35 @@ IMPORTANT: The response must end with either "Conclusion: STOP" or "Conclusion: 
 
     def extract_conclusion(self, response: Any) -> Tuple[str, str]:
         if isinstance(response, str):
-            # Attempt to parse the response as JSON
+            # Clean <think>...</think> block if present
             stripped_response = response.strip()
+            if stripped_response.startswith("<think>"):
+                think_end = stripped_response.find("</think>")
+                if think_end != -1:
+                    stripped_response = stripped_response[think_end + len("</think>"):].strip()
+            
+            # Attempt to parse the response as JSON
             if stripped_response.startswith("{"):
                 try:
-                    response_dict = json.loads(response)
+                    response_dict = json.loads(stripped_response)
                     response = MemoryVerification(**response_dict)
                 except Exception as e:
                     print(f"Failed to parse response as JSON: {str(e)}")
+            elif stripped_response.startswith("```"):
+                # Clean markdown fences too
+                clean_text = re.sub(r"^```(?:json)?\s*", "", stripped_response)
+                clean_text = re.sub(r"\s*```$", "", clean_text)
+                if clean_text.startswith("{"):
+                    try:
+                        response_dict = json.loads(clean_text)
+                        response = MemoryVerification(**response_dict)
+                    except Exception as e:
+                        pass
+            
+            # if we didn't transform response to MemoryVerification, keep stripped_response for fallback
+            if isinstance(response, str):
+                response = stripped_response
+
         if isinstance(response, MemoryVerification):
             analysis = response.analysis
             stop_signal = response.stop_signal

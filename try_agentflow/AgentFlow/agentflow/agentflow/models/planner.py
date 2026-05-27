@@ -260,6 +260,12 @@ Problem:
             if isinstance(response, str):
                 text = response.strip()
 
+                # Clean <think>...</think> block if present
+                if text.startswith("<think>"):
+                    think_end = text.find("</think>")
+                    if think_end != -1:
+                        text = text[think_end + len("</think>"):].strip()
+
                 # remove markdown fences if any
                 text = re.sub(r"^```(?:json)?\s*", "", text)
                 text = re.sub(r"\s*```$", "", text)

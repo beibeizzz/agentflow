@@ -172,9 +172,19 @@ execution = tool.execute(query=["Methanol", "function of hyperbola", "Fermat's L
         command = "No command found."
 
         if isinstance(response, str):
+            text = response.strip()
+            # Clean <think>...</think> block if present
+            if text.startswith("<think>"):
+                think_end = text.find("</think>")
+                if think_end != -1:
+                    text = text[think_end + len("</think>"):].strip()
+            
             # Attempt to parse as JSON first
             try:
-                response_dict = json.loads(response)
+                # Need to also clean potential markdown around json block for robust parsing
+                clean_text = re.sub(r"^```(?:json)?\s*", "", text)
+                clean_text = re.sub(r"\s*```$", "", clean_text)
+                response_dict = json.loads(clean_text)
                 response_obj = ToolCommand(**response_dict)
                 analysis = response_obj.analysis.strip()
                 explanation = response_obj.explanation.strip()

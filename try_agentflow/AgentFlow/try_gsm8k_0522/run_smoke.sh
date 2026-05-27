@@ -2,7 +2,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="${PYTHON:-/home/north/vllm_test/.venv/bin/python}"
+
+# Resolve relative path before cd
+if [[ -z "${PYTHON:-}" ]]; then
+  if [[ -x "./.venv/bin/python" ]]; then
+    PYTHON="$(pwd)/.venv/bin/python"
+  else
+    PYTHON="python"
+  fi
+fi
 
 cd "$SCRIPT_DIR"
 mkdir -p logs/smoke results summary data
@@ -20,7 +28,7 @@ run_variant() {
 
   mkdir -p "$result_dir" "$log_dir/problems"
 
-  echo "=== Smoke variant: $name output_types=$output_types max_steps=$max_steps max_tokens=${MAX_TOKENS:-512} ==="
+  echo "=== Smoke variant: $name output_types=$output_types max_steps=$max_steps max_tokens=${MAX_TOKENS:-1024} ==="
   "$PYTHON" run_gsm8k_agentflow.py \
     --data-file data/gsm8k_smoke_50.json \
     --output-dir "$result_dir" \
@@ -28,7 +36,7 @@ run_variant() {
     --output-types "$output_types" \
     --max-steps "$max_steps" \
     --max-time "${MAX_TIME:-120}" \
-    --max-tokens "${MAX_TOKENS:-512}" \
+    --max-tokens "${MAX_TOKENS:-1024}" \
     --overwrite \
     2>&1 | tee "$log_dir/run.log"
 
@@ -45,3 +53,4 @@ run_variant "smoke_calculator_steps2" "direct" "direct_output" 2
 run_variant "smoke_calculator_steps3" "direct" "direct_output" 3
 run_variant "smoke_calculator_steps4" "direct" "direct_output" 4
 run_variant "smoke_calculator_steps5" "direct" "direct_output" 5
+

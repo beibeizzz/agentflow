@@ -193,7 +193,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-file", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--solver-log-dir", type=Path, default=None)
-    parser.add_argument("--llm-engine-name", default="vllm-Qwen3-0.6B-Instruct")
+    parser.add_argument("--llm-engine-name", default="vllm-Qwen3-0.6B")
     parser.add_argument("--base-url", default="http://localhost:8000/v1")
     parser.add_argument("--output-types", default="direct", choices=["base", "direct", "final", "final,direct"])
     parser.add_argument("--start", type=int, default=0)

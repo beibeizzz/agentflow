@@ -2,14 +2,21 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PYTHON="${PYTHON:-/home/north/vllm_test/.venv/bin/python}"
+PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+# Resolve relative path before cd
+if [[ -z "${PYTHON:-}" ]]; then
+  if [[ -x "./.venv/bin/python" ]]; then
+    PYTHON="$(pwd)/.venv/bin/python"
+  else
+    PYTHON="python"
+  fi
+fi
 
-cd "$BASE_DIR"
+cd "$PARENT_DIR"
 mkdir -p direct_baseline/logs direct_baseline/results direct_baseline/summary data
 
 SMOKE_SIZE="${SMOKE_SIZE:-50}"
-MODEL="${MODEL:-Qwen3-0.6B-Instruct}"
+MODEL="${MODEL:-Qwen3-0.6B}"
 BASE_URL="${BASE_URL:-http://localhost:8000/v1}"
 MAX_TOKENS="${MAX_TOKENS:-2048}"
 TEMPERATURE="${TEMPERATURE:-0.0}"
