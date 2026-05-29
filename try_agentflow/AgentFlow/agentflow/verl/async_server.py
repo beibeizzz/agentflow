@@ -1,41 +1,69 @@
+import inspect
+import logging
+
 import ray
-from copy import deepcopy
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.entrypoints.openai.api_server import build_app, init_app_state
+from vllm.usage.usage_lib import UsageContext
+from vllm.v1.engine.async_llm import AsyncLLM
 
-from agentflow.instrumentation.vllm import instrument_vllm, ChatCompletionResponsePatched
-from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
-from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ErrorResponse
-from verl.workers.rollout.vllm_rollout.vllm_async_server import AsyncvLLMServer
+from agentflow.instrumentation.vllm import instrument_vllm
+from verl.workers.rollout.utils import run_uvicorn
+from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMHttpServer
 
 
-def _unwrap_ray_remote(cls):
-    if hasattr(cls, "__ray_actor_class__"):
-        cls = cls.__ray_actor_class__
-    return cls
+logger = logging.getLogger(__file__)
 
 
 @ray.remote(num_cpus=1)
-class PatchedvLLMServer(_unwrap_ray_remote(AsyncvLLMServer)):
-
-    def __init__(self, *args, **kwargs):
+class PatchedvLLMServer(vLLMHttpServer):
+    async def run_server(self, args):
         instrument_vllm()
-        super().__init__(*args, **kwargs)
 
-        self.config = deepcopy(self.config)
-        self.config.rollout.multi_turn.tool_config_path = "/dev/null"
+        engine_args = AsyncEngineArgs.from_cli_args(args)
+        usage_context = UsageContext.OPENAI_API_SERVER
+        vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+        vllm_config.parallel_config.data_parallel_master_port = self._dp_master_port
 
-    async def chat_completion(self, raw_request: Request):
-        """OpenAI-compatible HTTP endpoint.
+        fn_args = set(dict(inspect.signature(AsyncLLM.from_vllm_config).parameters).keys())
+        kwargs = {}
+        if "enable_log_requests" in fn_args:
+            kwargs["enable_log_requests"] = engine_args.enable_log_requests
+        if "disable_log_stats" in fn_args:
+            kwargs["disable_log_stats"] = engine_args.disable_log_stats
 
-        API reference: https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
-        """
-        request_json = await raw_request.json()
-        request = ChatCompletionRequest(**request_json)
-        generator = await self.openai_serving_chat.create_chat_completion(request, raw_request)
+        engine_client = AsyncLLM.from_vllm_config(
+            vllm_config=vllm_config,
+            usage_context=usage_context,
+            **kwargs,
+        )
 
-        if isinstance(generator, ErrorResponse):
-            return JSONResponse(content=generator.model_dump(), status_code=generator.code)
-        if request.stream:
-            return StreamingResponse(content=generator, media_type="text/event-stream")
+        await engine_client.reset_mm_cache()
+        await engine_client.collective_rpc(
+            method="monkey_patch_model",
+            kwargs={"vocab_size": len(self.model_config.tokenizer)},
+        )
+
+        build_app_sig = inspect.signature(build_app)
+        supported_tasks = ()
+        if "supported_tasks" in build_app_sig.parameters:
+            supported_tasks = await engine_client.get_supported_tasks()
+            app = build_app(args, supported_tasks)
         else:
-            return JSONResponse(content=generator.model_dump())
+            app = build_app(args)
+
+        init_app_sig = inspect.signature(init_app_state)
+        if "vllm_config" in init_app_sig.parameters:
+            await init_app_state(engine_client, vllm_config, app.state, args)
+        elif "supported_tasks" in init_app_sig.parameters:
+            await init_app_state(engine_client, app.state, args, supported_tasks)
+        else:
+            await init_app_state(engine_client, app.state, args)
+
+        app.state.server = self
+
+        if self.replica_rank == 0 and self.node_rank == 0:
+            logger.info(f"Initializing a V1 LLM engine with config: {vllm_config}")
+
+        self.engine = engine_client
+        self._server_port, self._server_task = await run_uvicorn(app, args, self._server_address)

@@ -29,10 +29,12 @@ def _patch_new_agentops():
 
     def _handle_chat_attributes_with_tokens(args=None, kwargs=None, return_value=None, **kws):
         attributes = _original_handle_chat_attributes(args=args, kwargs=kwargs, return_value=return_value, **kws)
-        if hasattr(return_value, "prompt_token_ids"):
-            attributes["prompt_token_ids"] = list(return_value.prompt_token_ids)
-        if hasattr(return_value, "response_token_ids"):
-            attributes["response_token_ids"] = list(return_value.response_token_ids[0])
+        prompt_token_ids = getattr(return_value, "prompt_token_ids", None)
+        if prompt_token_ids is not None:
+            attributes["prompt_token_ids"] = list(prompt_token_ids)
+        response_token_ids = getattr(return_value, "response_token_ids", None)
+        if response_token_ids:
+            attributes["response_token_ids"] = list(response_token_ids[0])
 
         # For LiteLLM, response is a openai._legacy_response.LegacyAPIResponse
         if hasattr(return_value, "http_response") and hasattr(return_value.http_response, "json"):
@@ -79,10 +81,12 @@ def _patch_old_agentops():
     @dont_throw
     def _handle_response_with_tokens(response, span, *args, **kwargs):
         _original_handle_response(response, span, *args, **kwargs)
-        if hasattr(response, "prompt_token_ids"):
-            span.set_attribute("prompt_token_ids", list(response.prompt_token_ids))
-        if hasattr(response, "response_token_ids"):
-            span.set_attribute("response_token_ids", list(response.response_token_ids[0]))
+        prompt_token_ids = getattr(response, "prompt_token_ids", None)
+        if prompt_token_ids is not None:
+            span.set_attribute("prompt_token_ids", list(prompt_token_ids))
+        response_token_ids = getattr(response, "response_token_ids", None)
+        if response_token_ids:
+            span.set_attribute("response_token_ids", list(response_token_ids[0]))
 
         # For LiteLLM, response is a openai._legacy_response.LegacyAPIResponse
         if hasattr(response, "http_response") and hasattr(response.http_response, "json"):

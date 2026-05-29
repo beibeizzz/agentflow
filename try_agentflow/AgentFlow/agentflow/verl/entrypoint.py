@@ -149,6 +149,10 @@ class TaskRunner:
             collate_fn=collate_fn,
             train_sampler=train_sampler,
         )
+        # verl versions differ in whether RayPPOTrainer stores these callables
+        # under the same attribute names. AgentFlowTrainer.fit uses these names.
+        trainer.reward_fn = reward_fn
+        trainer.val_reward_fn = val_reward_fn
         trainer.init_workers()
         trainer.fit()
 

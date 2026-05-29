@@ -423,7 +423,8 @@ class AgentFlowTrainer(RayPPOTrainer):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
+        val_reward_fn = getattr(self, "val_reward_fn", None)
+        if val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
             print(f"Initial validation metrics: {val_metrics}")
@@ -448,8 +449,9 @@ class AgentFlowTrainer(RayPPOTrainer):
                 metrics = self._train_step(batch_dict)
 
                 # validate
+                val_reward_fn = getattr(self, "val_reward_fn", None)
                 if (
-                    self.val_reward_fn is not None
+                    val_reward_fn is not None
                     and self.config.trainer.test_freq > 0
                     and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
                 ):

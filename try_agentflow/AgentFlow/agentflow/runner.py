@@ -196,24 +196,30 @@ class AgentRunner(ParallelWorkerBase):
 
     async def run_async(self) -> bool:
         """Poll the task and rollout once."""
+        logger.info(f"{self._log_prefix()} before set_runner")
         self.agent.set_runner(self)  # Ensure the agent has a reference to this runner
 
+        logger.info(f"{self._log_prefix()} before poll_next_task_async")
         task = await self.client.poll_next_task_async()
         if task is None:
             logger.info(f"{self._log_prefix()} Poll returned no task. Exiting.")
             return False
         rollout_id = task.rollout_id
+        logger.info(f"{self._log_prefix(rollout_id)} got task")
 
         resources_id = task.resources_id
         resources_update = None
         if resources_id:
+            logger.info(f"{self._log_prefix(rollout_id)} before get_resources_by_id_async")
             resources_update = await self.client.get_resources_by_id_async(resources_id)
         else:
             logger.debug(f"{self._log_prefix(rollout_id)} No 'resources_id'. Fetching latest resources.")
+            logger.info(f"{self._log_prefix(rollout_id)} before get_latest_resources_async")
             resources_update = await self.client.get_latest_resources_async()
         if not resources_update:
             logger.error(f"{self._log_prefix(rollout_id)} Failed to fetch resources. Skipping.")
             return False
+        logger.info(f"{self._log_prefix(rollout_id)} got resources")
 
         rollout_obj = Rollout(rollout_id=task.rollout_id)  # Default empty rollout
 
@@ -224,7 +230,9 @@ class AgentRunner(ParallelWorkerBase):
                     self.agent.training_rollout_async if task.mode == "train" else self.agent.validation_rollout_async
                 )
                 # Pass the task input, not the whole task object
+                logger.info(f"{self._log_prefix(rollout_id)} before rollout_method")
                 result = await rollout_method(task.input, task.rollout_id, resources_update.resources)
+                logger.info(f"{self._log_prefix(rollout_id)} after rollout_method")
                 rollout_obj = self._to_rollout_object(result, task.rollout_id)
                 end_time = time.time()
                 logger.info(
@@ -246,7 +254,10 @@ class AgentRunner(ParallelWorkerBase):
         logger.info(f"{self._log_prefix()} Started async rollouts (max: {self.max_tasks or 'unlimited'}).")
 
         while self.max_tasks is None or num_tasks_processed < self.max_tasks:
-            if await self.run_async():
+            logger.info(f"{self._log_prefix()} before run_async")
+            ok = await self.run_async()
+            logger.info(f"{self._log_prefix()} after run_async ok={ok}")
+            if ok:
                 num_tasks_processed += 1
 
             if num_tasks_processed % 10 == 0 or num_tasks_processed == 1:
