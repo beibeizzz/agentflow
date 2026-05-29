@@ -26,11 +26,13 @@ class PlannerPolicy:
         top_p: float = 0.95,
         dtype: str = "bfloat16",
         gradient_checkpointing: bool = True,
+        adapter_path: str | None = None,
     ) -> None:
-        from peft import LoraConfig, TaskType, get_peft_model
+        from peft import LoraConfig, PeftModel, TaskType, get_peft_model
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        tokenizer_path = adapter_path or model_path
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         torch_dtype = {
@@ -47,14 +49,17 @@ class PlannerPolicy:
         if gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
             self.model.config.use_cache = False
-        config = LoraConfig(
-            r=lora_rank,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            task_type=TaskType.CAUSAL_LM,
-            target_modules="all-linear",
-        )
-        self.model = get_peft_model(self.model, config)
+        if adapter_path is None:
+            config = LoraConfig(
+                r=lora_rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                task_type=TaskType.CAUSAL_LM,
+                target_modules="all-linear",
+            )
+            self.model = get_peft_model(self.model, config)
+        else:
+            self.model = PeftModel.from_pretrained(self.model, adapter_path)
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
