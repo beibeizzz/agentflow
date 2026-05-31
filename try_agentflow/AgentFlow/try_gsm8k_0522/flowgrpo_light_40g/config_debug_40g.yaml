@@ -15,7 +15,11 @@ verifier_think_mode: default
 seed: 0
 epochs: 1
 max_train_items: 16
-group_size: 8
+question_batch_size: 4
+group_size: 4
+rollout_concurrency: 16
+planner_batch_size: 16
+planner_batch_timeout_s: 0.10
 max_steps: 3
 
 dtype: bfloat16
@@ -31,5 +35,6 @@ kl_coef: 0.0
 planner_max_new_tokens: 192
 planner_temperature: 0.9
 planner_top_p: 0.95
+logprob_micro_batch_size: 8
 
 save_every: 4

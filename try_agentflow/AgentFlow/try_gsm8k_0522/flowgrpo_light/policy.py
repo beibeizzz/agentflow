@@ -79,9 +79,14 @@ class PlannerPolicy:
         self.tokenizer.save_pretrained(output_dir)
 
     def generate(self, prompt: str) -> GeneratedResponse:
+        return self.generate_many([prompt])[0]
+
+    def generate_many(self, prompts: list[str]) -> list[GeneratedResponse]:
+        if not prompts:
+            return []
         self.eval()
-        inputs = self._encode_prompt(prompt)
-        input_len = inputs["input_ids"].shape[-1]
+        inputs = self._encode_prompts(prompts)
+        prompt_width = inputs["input_ids"].shape[-1]
         with torch.no_grad():
             output = self.model.generate(
                 **inputs,
@@ -92,9 +97,12 @@ class PlannerPolicy:
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
             )
-        response_ids = output[0, input_len:]
-        response = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
-        return GeneratedResponse(prompt=prompt, response=response)
+        generated: list[GeneratedResponse] = []
+        for prompt, output_ids in zip(prompts, output, strict=True):
+            response_ids = output_ids[prompt_width:]
+            response = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
+            generated.append(GeneratedResponse(prompt=prompt, response=response))
+        return generated
 
     def render_agentflow_prompt(
         self,
@@ -128,22 +136,45 @@ class PlannerPolicy:
         system_prompt: str | None = None,
         think_mode: str = "default",
     ) -> GeneratedResponse:
-        rendered_prompt = self.render_agentflow_prompt(
-            prompt,
-            system_prompt=system_prompt,
+        return self.generate_many_for_agentflow(
+            [prompt],
+            system_prompts=[system_prompt],
             think_mode=think_mode,
-        )
-        return self.generate(rendered_prompt)
+        )[0]
+
+    def generate_many_for_agentflow(
+        self,
+        prompts: list[str],
+        *,
+        system_prompts: list[str | None] | None = None,
+        think_mode: str = "default",
+    ) -> list[GeneratedResponse]:
+        if system_prompts is None:
+            system_prompts = [None for _ in prompts]
+        if len(system_prompts) != len(prompts):
+            raise ValueError("system_prompts must have the same length as prompts")
+        rendered_prompts = [
+            self.render_agentflow_prompt(prompt, system_prompt=system_prompt, think_mode=think_mode)
+            for prompt, system_prompt in zip(prompts, system_prompts, strict=True)
+        ]
+        return self.generate_many(rendered_prompts)
 
     def sequence_logprob(self, prompt: str, response: str, *, use_adapter: bool = True) -> torch.Tensor:
-        prompt_ids = self._tokenize(prompt, add_special_tokens=True)
-        response_ids = self._tokenize(response, add_special_tokens=False)
-        if not response_ids:
-            response_ids = [self.tokenizer.eos_token_id]
+        return self.sequence_logprob_many([prompt], [response], use_adapter=use_adapter)[0]
 
-        input_ids = torch.tensor([prompt_ids + response_ids], device=self.device)
-        attention_mask = torch.ones_like(input_ids)
+    def sequence_logprob_many(
+        self,
+        prompts: list[str],
+        responses: list[str],
+        *,
+        use_adapter: bool = True,
+    ) -> torch.Tensor:
+        if len(prompts) != len(responses):
+            raise ValueError("prompts and responses must have the same length")
+        if not prompts:
+            return torch.empty(0, device=self.device)
 
+        input_ids, attention_mask, response_mask = self._encode_logprob_batch(prompts, responses)
         if use_adapter:
             logits = self.model(input_ids=input_ids, attention_mask=attention_mask).logits
         else:
@@ -154,14 +185,59 @@ class PlannerPolicy:
         shift_labels = input_ids[:, 1:]
         logprobs = F.log_softmax(shift_logits, dim=-1)
         token_logprobs = logprobs.gather(-1, shift_labels.unsqueeze(-1)).squeeze(-1)
-
-        response_start = max(len(prompt_ids) - 1, 0)
-        response_token_logprobs = token_logprobs[:, response_start:]
-        return response_token_logprobs.sum()
+        response_mask = response_mask.to(dtype=token_logprobs.dtype)
+        return (token_logprobs * response_mask).sum(dim=1)
 
     def _encode_prompt(self, prompt: str) -> dict[str, torch.Tensor]:
         inputs = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=True)
         return {key: value.to(self.device) for key, value in inputs.items()}
+
+    def _encode_prompts(self, prompts: list[str]) -> dict[str, torch.Tensor]:
+        if hasattr(self.tokenizer, "padding_side"):
+            self.tokenizer.padding_side = "left"
+        inputs = self.tokenizer(
+            prompts,
+            return_tensors="pt",
+            add_special_tokens=True,
+            padding=True,
+        )
+        return {key: value.to(self.device) for key, value in inputs.items()}
+
+    def _encode_logprob_batch(
+        self,
+        prompts: list[str],
+        responses: list[str],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        encoded_prompts = [self._tokenize(prompt, add_special_tokens=True) for prompt in prompts]
+        encoded_responses = [
+            self._tokenize(response, add_special_tokens=False) or [self.tokenizer.eos_token_id]
+            for response in responses
+        ]
+        sequences = [
+            prompt_ids + response_ids
+            for prompt_ids, response_ids in zip(encoded_prompts, encoded_responses, strict=True)
+        ]
+        max_length = max(len(sequence) for sequence in sequences)
+        input_ids = torch.full(
+            (len(sequences), max_length),
+            int(self.tokenizer.pad_token_id),
+            dtype=torch.long,
+            device=self.device,
+        )
+        attention_mask = torch.zeros_like(input_ids)
+        response_mask = torch.zeros((len(sequences), max(max_length - 1, 0)), dtype=torch.float32, device=self.device)
+
+        for index, (prompt_ids, response_ids, sequence) in enumerate(
+            zip(encoded_prompts, encoded_responses, sequences, strict=True)
+        ):
+            sequence_tensor = torch.tensor(sequence, dtype=torch.long, device=self.device)
+            sequence_length = len(sequence)
+            input_ids[index, :sequence_length] = sequence_tensor
+            attention_mask[index, :sequence_length] = 1
+            response_start = max(len(prompt_ids) - 1, 0)
+            response_end = response_start + len(response_ids)
+            response_mask[index, response_start:response_end] = 1.0
+        return input_ids, attention_mask, response_mask
 
     def _tokenize(self, text: str, *, add_special_tokens: bool) -> list[int]:
         ids = self.tokenizer(text, add_special_tokens=add_special_tokens)["input_ids"]

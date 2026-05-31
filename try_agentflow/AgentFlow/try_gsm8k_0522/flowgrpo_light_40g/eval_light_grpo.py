@@ -168,26 +168,31 @@ def main(argv: list[str] | None = None) -> None:
         details_path.unlink()
 
     rewards: list[float] = []
-    for index, row in enumerate(rows, start=1):
-        rollout = collect_rollout(row)
-        rewards.append(rollout.reward)
-        record = {
-            "index": index,
-            "id": row.get("id") or row.get("pid"),
-            "question": row.get("question"),
-            "gold_answer": row.get("result") or row.get("gold_answer"),
-            "reward": rollout.reward,
-            "answer": rollout.answer,
-            "errors": rollout.errors,
-            "memory": rollout.memory,
-            "rollout_backend": rollout_backend,
-            "think_mode": think_mode,
-            "query_analysis_think_mode": query_analysis_think_mode,
-            "final_output_think_mode": final_output_think_mode,
-            "verifier_think_mode": verifier_think_mode,
-        }
-        append_jsonl(details_path, record)
-        print(f"eval {index}/{len(rows)} id={record['id']} reward={rollout.reward:.1f}")
+    try:
+        for index, row in enumerate(rows, start=1):
+            rollout = collect_rollout(row)
+            rewards.append(rollout.reward)
+            record = {
+                "index": index,
+                "id": row.get("id") or row.get("pid"),
+                "question": row.get("question"),
+                "gold_answer": row.get("result") or row.get("gold_answer"),
+                "reward": rollout.reward,
+                "answer": rollout.answer,
+                "errors": rollout.errors,
+                "memory": rollout.memory,
+                "rollout_backend": rollout_backend,
+                "think_mode": think_mode,
+                "query_analysis_think_mode": query_analysis_think_mode,
+                "final_output_think_mode": final_output_think_mode,
+                "verifier_think_mode": verifier_think_mode,
+            }
+            append_jsonl(details_path, record)
+            print(f"eval {index}/{len(rows)} id={record['id']} reward={rollout.reward:.1f}")
+    finally:
+        close_rollout_runner = getattr(locals().get("rollout_runner", None), "close", None)
+        if callable(close_rollout_runner):
+            close_rollout_runner()
 
     summary = summarize_rewards(rewards)
     summary.update(

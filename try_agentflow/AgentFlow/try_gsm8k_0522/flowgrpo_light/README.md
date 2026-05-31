@@ -32,7 +32,10 @@ bash try_gsm8k_0522/flowgrpo_light/run_smoke_12g.sh
 
 The 12G config uses:
 
+- `question_batch_size: 1`
 - `group_size: 2`
+- `planner_batch_size: 2`
+- `logprob_micro_batch_size: 4`
 - `max_train_items: 4`
 - `lora_rank: 8`
 - `planner_max_new_tokens: 128`

@@ -20,7 +20,11 @@ max_tokens: 2048
 seed: 0
 epochs: 1
 max_train_items: 4
+question_batch_size: 1
 group_size: 2
+rollout_concurrency: 2
+planner_batch_size: 2
+planner_batch_timeout_s: 0.02
 max_steps: 3
 
 dtype: bfloat16
@@ -36,5 +40,6 @@ kl_coef: 0.0
 planner_max_new_tokens: 128
 planner_temperature: 0.8
 planner_top_p: 0.95
+logprob_micro_batch_size: 4
 
 save_every: 2

@@ -32,6 +32,7 @@ class RolloutResult:
     memory: dict[str, Any] = field(default_factory=dict)
     query_analysis: str = ""
     errors: list[str] = field(default_factory=list)
+    valid_for_training: bool = True
 
 
 def run_rollout(
