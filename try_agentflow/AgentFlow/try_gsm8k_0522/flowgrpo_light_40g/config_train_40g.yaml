@@ -9,13 +9,13 @@ frozen_max_tokens: 512
 frozen_timeout: 120
 
 rollout_backend: agentflow
-think_mode: default
-query_analysis_think_mode: default
-final_output_think_mode: default
-verifier_think_mode: default
+think_mode: off
+query_analysis_think_mode: on
+final_output_think_mode: off
+verifier_think_mode: on
 output_types: direct
 max_time: 120
-max_tokens: 2048
+max_tokens: 512
 
 seed: 0
 epochs: 1
@@ -37,7 +37,7 @@ weight_decay: 0.0
 max_grad_norm: 1.0
 kl_coef: 0.0
 
-planner_max_new_tokens: 192
+planner_max_new_tokens: 256
 planner_temperature: 0.9
 planner_top_p: 0.95
 logprob_micro_batch_size: 8

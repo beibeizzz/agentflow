@@ -68,11 +68,11 @@ class Solver:
                 repeated_calculation = True
 
         if repeated_sub_goal and repeated_calculation:
-            return "Planner sub_goal repeated and Calculation repeated."
+            return "Your sub_goal repeated and Calculation repeated."
         if repeated_sub_goal:
-            return "Planner sub_goal repeated."
+            return "Your sub_goal repeated."
         if repeated_calculation:
-            return "Planner Calculation repeated."
+            return "Your Calculation repeated."
         return None
 
     @staticmethod
@@ -80,7 +80,7 @@ class Solver:
         return (
             f"Conclusion: CONTINUE\n{repeat_reason} "
             "You must choose a different Sub_goal and a different Calculation that directly fix the missing logic; "
-            "do not repeat any previous planner step."
+            "do not repeat any previous step."
         )
 
     @staticmethod
@@ -167,8 +167,8 @@ class Solver:
                 fixed_context_verification = None
                 fixed_conclusion = None
                 if tool_name is None:
-                    print("\n==> 🚫 Error: Planner output was invalid; no tool command generated.")
-                    command = "Planner output was invalid; no tool command generated."
+                    print("\n==> 🚫 Error: You output was invalid; no tool command generated.")
+                    command = "You output was invalid; no tool command generated."
                     result = "No calculator execution was attempted."
                     action_extra["action_predictor_response"] = str(next_step)
                 elif tool_name not in self.planner.available_tools:
@@ -181,7 +181,7 @@ class Solver:
                     repeat_reason = self._detect_repeated_planner_step(context, sub_goal)
                     if repeat_reason:
                         print(f"\n==> 🚫 Error: {repeat_reason}")
-                        command = "Planner repeated previous sub_goal or Calculation; no tool command generated."
+                        command = "You repeated previous sub_goal or Calculation; no tool command generated."
                         result = []
                         fixed_context_verification = self._make_repeat_judge(repeat_reason)
                         fixed_conclusion = "CONTINUE"

@@ -78,25 +78,53 @@ class PlannerPolicy:
         self.model.save_pretrained(output_dir)
         self.tokenizer.save_pretrained(output_dir)
 
-    def generate(self, prompt: str) -> GeneratedResponse:
-        return self.generate_many([prompt])[0]
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        do_sample: bool | None = None,
+    ) -> GeneratedResponse:
+        return self.generate_many(
+            [prompt],
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=do_sample,
+        )[0]
 
-    def generate_many(self, prompts: list[str]) -> list[GeneratedResponse]:
+    def generate_many(
+        self,
+        prompts: list[str],
+        *,
+        max_new_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        do_sample: bool | None = None,
+    ) -> list[GeneratedResponse]:
         if not prompts:
             return []
         self.eval()
         inputs = self._encode_prompts(prompts)
         prompt_width = inputs["input_ids"].shape[-1]
+        effective_temperature = self.temperature if temperature is None else float(temperature)
+        effective_top_p = self.top_p if top_p is None else float(top_p)
+        effective_max_new_tokens = self.max_new_tokens if max_new_tokens is None else int(max_new_tokens)
+        effective_do_sample = effective_temperature > 0 if do_sample is None else bool(do_sample)
+        generation_kwargs = {
+            **inputs,
+            "do_sample": effective_do_sample,
+            "max_new_tokens": effective_max_new_tokens,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+        }
+        if effective_do_sample:
+            generation_kwargs["temperature"] = effective_temperature
+            generation_kwargs["top_p"] = effective_top_p
         with torch.no_grad():
-            output = self.model.generate(
-                **inputs,
-                do_sample=True,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                max_new_tokens=self.max_new_tokens,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
+            output = self.model.generate(**generation_kwargs)
         generated: list[GeneratedResponse] = []
         for prompt, output_ids in zip(prompts, output, strict=True):
             response_ids = output_ids[prompt_width:]
@@ -135,11 +163,19 @@ class PlannerPolicy:
         *,
         system_prompt: str | None = None,
         think_mode: str = "default",
+        max_new_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        do_sample: bool | None = None,
     ) -> GeneratedResponse:
         return self.generate_many_for_agentflow(
             [prompt],
             system_prompts=[system_prompt],
             think_mode=think_mode,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=do_sample,
         )[0]
 
     def generate_many_for_agentflow(
@@ -148,6 +184,10 @@ class PlannerPolicy:
         *,
         system_prompts: list[str | None] | None = None,
         think_mode: str = "default",
+        max_new_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        do_sample: bool | None = None,
     ) -> list[GeneratedResponse]:
         if system_prompts is None:
             system_prompts = [None for _ in prompts]
@@ -157,7 +197,13 @@ class PlannerPolicy:
             self.render_agentflow_prompt(prompt, system_prompt=system_prompt, think_mode=think_mode)
             for prompt, system_prompt in zip(prompts, system_prompts, strict=True)
         ]
-        return self.generate_many(rendered_prompts)
+        return self.generate_many(
+            rendered_prompts,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=do_sample,
+        )
 
     def sequence_logprob(self, prompt: str, response: str, *, use_adapter: bool = True) -> torch.Tensor:
         return self.sequence_logprob_many([prompt], [response], use_adapter=use_adapter)[0]

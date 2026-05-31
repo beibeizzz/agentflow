@@ -18,7 +18,7 @@ mkdir -p logs/smoke results summary data
 "$PYTHON" prepare_gsm8k_json.py --smoke-size 20
 THINK_MODE="${THINK_MODE:-off}"
 QUERY_ANALYSIS_THINK_MODE="${QUERY_ANALYSIS_THINK_MODE:-on}"
-FINAL_OUTPUT_THINK_MODE="${FINAL_OUTPUT_THINK_MODE:-on}"
+FINAL_OUTPUT_THINK_MODE="${FINAL_OUTPUT_THINK_MODE:-off}"
 VERIFIER_THINK_MODE="${VERIFIER_THINK_MODE:-on}"
 
 run_variant() {
@@ -32,7 +32,7 @@ run_variant() {
 
   mkdir -p "$result_dir" "$log_dir/problems"
 
-  echo "=== Smoke variant: $name output_types=$output_types max_steps=$max_steps max_tokens=${MAX_TOKENS:-1024} think_mode=$THINK_MODE query_analysis_think_mode=$QUERY_ANALYSIS_THINK_MODE final_output_think_mode=$FINAL_OUTPUT_THINK_MODE verifier_think_mode=$VERIFIER_THINK_MODE ==="
+  echo "=== Smoke variant: $name output_types=$output_types max_steps=$max_steps max_tokens=${MAX_TOKENS:-256} think_mode=$THINK_MODE query_analysis_think_mode=$QUERY_ANALYSIS_THINK_MODE final_output_think_mode=$FINAL_OUTPUT_THINK_MODE verifier_think_mode=$VERIFIER_THINK_MODE ==="
   "$PYTHON" run_gsm8k_agentflow.py \
     --data-file data/gsm8k_smoke_20.json \
     --output-dir "$result_dir" \
@@ -40,7 +40,7 @@ run_variant() {
     --output-types "$output_types" \
     --max-steps "$max_steps" \
     --max-time "${MAX_TIME:-120}" \
-    --max-tokens "${MAX_TOKENS:-1024}" \
+    --max-tokens "${MAX_TOKENS:-256}" \
     --think-mode "$THINK_MODE" \
     --query-analysis-think-mode "$QUERY_ANALYSIS_THINK_MODE" \
     --final-output-think-mode "$FINAL_OUTPUT_THINK_MODE" \

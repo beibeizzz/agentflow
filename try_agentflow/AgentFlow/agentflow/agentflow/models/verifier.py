@@ -129,8 +129,7 @@ IMPORTANT: Your response MUST end with either 'Conclusion: STOP' or 'Conclusion:
         elif calculator_only:
             prompt_memory_verification = f"""
 {self._think_directive()}Decide whether memory has enough proof to solve the entire problem.
-Inspect Memory step by step.
-Initial Analysis and action_predictor_response is for reference only.
+Initial Analysis and Memory's action_predictor_response is only a hint, not proof.
 Command/result pairs from executed tools count as proof.
 
 Before STOP, check:
@@ -146,7 +145,7 @@ Context:
 
 Rules:
 - First line must be Conclusion. Do not write any other Conclusion in the response. 
-- Don't solves the problem or repeat the raw problem. 
+- Do not solve the problem or repeat the raw problem. 
 - Analyse the missing logic if neccessary. 
 - Follow the formats above. Response only one of the two formats below.
 - Do not write another Conclusion later.
@@ -162,7 +161,7 @@ Next action:...
 
 Format2 (Only when memory solves the entire problem):
 Conclusion: STOP
-Current memory solve the entire problem.
+Current memory solves the entire problem.
 <end>
 
 

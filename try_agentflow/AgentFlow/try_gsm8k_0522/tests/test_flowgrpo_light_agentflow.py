@@ -31,8 +31,9 @@ class FakePolicy:
         *,
         system_prompt: str | None = None,
         think_mode: str = "default",
+        **generation_kwargs,
     ) -> GeneratedResponse:
-        self.calls.append((prompt, system_prompt, think_mode))
+        self.calls.append((prompt, system_prompt, think_mode, dict(generation_kwargs)))
         return GeneratedResponse(prompt=f"rendered:{system_prompt}:{prompt}", response='{"Calculation": "1+1"}')
 
     def generate_many_for_agentflow(
@@ -41,9 +42,10 @@ class FakePolicy:
         *,
         system_prompts: list[str | None] | None = None,
         think_mode: str = "default",
+        **generation_kwargs,
     ) -> list[GeneratedResponse]:
         effective_system_prompts = system_prompts or [None for _ in prompts]
-        self.batch_calls.append((list(prompts), list(effective_system_prompts), think_mode))
+        self.batch_calls.append((list(prompts), list(effective_system_prompts), think_mode, dict(generation_kwargs)))
         return [
             GeneratedResponse(
                 prompt=f"rendered:{system_prompt}:{prompt}",
@@ -162,16 +164,73 @@ class AgentFlowLightRolloutTests(unittest.TestCase):
         self.assertEqual(len(policy.model.generate_calls), 1)
         self.assertEqual(policy.tokenizer.padding_side, "left")
 
+    def test_policy_generation_overrides_make_temperature_zero_deterministic(self) -> None:
+        policy = PlannerPolicy.__new__(PlannerPolicy)
+
+        class FakeTokenizer:
+            pad_token_id = 0
+            eos_token_id = 99
+            padding_side = "right"
+
+            def __call__(self, texts, *, return_tensors=None, add_special_tokens=True, padding=False):
+                if isinstance(texts, str):
+                    texts = [texts]
+                return {
+                    "input_ids": torch.tensor([[1, 2, 99] for _ in texts]),
+                    "attention_mask": torch.tensor([[1, 1, 1] for _ in texts]),
+                }
+
+            def decode(self, ids, *, skip_special_tokens=True):
+                return "ok"
+
+        class FakeModel:
+            def __init__(self) -> None:
+                self.kwargs = None
+                self.param = torch.nn.Parameter(torch.zeros(1))
+
+            def eval(self) -> None:
+                pass
+
+            def parameters(self):
+                yield self.param
+
+            def generate(self, **kwargs):
+                self.kwargs = kwargs
+                return torch.tensor([[1, 2, 99, 3]])
+
+        policy.tokenizer = FakeTokenizer()
+        policy.model = FakeModel()
+        policy.max_new_tokens = 128
+        policy.temperature = 0.8
+        policy.top_p = 0.95
+
+        policy.generate_many(["prompt"], temperature=0.0, top_p=0.5, max_new_tokens=64)
+
+        self.assertEqual(policy.model.kwargs["do_sample"], False)
+        self.assertEqual(policy.model.kwargs["max_new_tokens"], 64)
+        self.assertNotIn("temperature", policy.model.kwargs)
+        self.assertNotIn("top_p", policy.model.kwargs)
+
     def test_planner_engine_uses_policy_and_records_rendered_prompt_sample(self) -> None:
         policy = FakePolicy()
         engine = AgentFlowPlannerEngine(policy, think_mode="off")
 
-        response = engine("Planner prompt", system_prompt="Planner system", max_tokens=512)
+        response = engine("Planner prompt", system_prompt="Planner system", max_tokens=512, temperature=0.0, top_p=0.95)
 
         self.assertEqual(response, '{"Calculation": "1+1"}')
-        self.assertEqual(policy.calls, [("Planner prompt", "Planner system", "off")])
+        self.assertEqual(
+            policy.calls,
+            [("Planner prompt", "Planner system", "off", {"max_new_tokens": 512, "temperature": 0.0, "top_p": 0.95})],
+        )
         self.assertEqual(len(engine.samples), 1)
         self.assertEqual(engine.samples[0].prompt, "rendered:Planner system:Planner prompt")
+        self.assertEqual(engine.samples[0].rendered_prompt, "rendered:Planner system:Planner prompt")
+        self.assertEqual(engine.samples[0].raw_prompt, "Planner prompt")
+        self.assertEqual(engine.samples[0].system_prompt, "Planner system")
+        self.assertEqual(
+            engine.samples[0].generation_kwargs,
+            {"max_new_tokens": 512, "temperature": 0.0, "top_p": 0.95},
+        )
         self.assertEqual(engine.samples[0].response, '{"Calculation": "1+1"}')
 
     def test_rollout_runner_calls_solver_solve_and_scores_direct_output(self) -> None:
@@ -238,13 +297,16 @@ class AgentFlowLightRolloutTests(unittest.TestCase):
 
         self.assertEqual(sorted(responses), [f"response:prompt-{index}" for index in range(4)])
         self.assertEqual(len(policy.batch_calls), 1)
-        prompts, system_prompts, think_mode = policy.batch_calls[0]
+        prompts, system_prompts, think_mode, generation_kwargs = policy.batch_calls[0]
         self.assertEqual(sorted(prompts), [f"prompt-{index}" for index in range(4)])
         self.assertEqual(sorted(system_prompts), [f"system-{index}" for index in range(4)])
         self.assertEqual(think_mode, "off")
+        self.assertEqual(generation_kwargs, {})
         for index, proxy in enumerate(proxies):
             self.assertEqual(len(proxy.samples), 1)
             self.assertEqual(proxy.samples[0].response, f"response:prompt-{index}")
+            self.assertEqual(proxy.samples[0].raw_prompt, f"prompt-{index}")
+            self.assertEqual(proxy.samples[0].system_prompt, f"system-{index}")
 
     def test_batch_rollout_runner_runs_question_batch_with_independent_solver_workers(self) -> None:
         policy = FakePolicy()

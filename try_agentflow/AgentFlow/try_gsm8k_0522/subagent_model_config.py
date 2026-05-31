@@ -14,7 +14,7 @@ BASELINE_SYSTEM_PROMPT = (
 
 BASELINE_GENERATION_CONFIG: dict[str, Any] = {
     "system_prompt": BASELINE_SYSTEM_PROMPT,
-    "max_tokens": 1024,
+    "max_tokens": 256,
     "temperature": 0.0,
     "top_p": 0.95,
     "frequency_penalty": 0,

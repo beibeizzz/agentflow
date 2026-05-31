@@ -7,6 +7,10 @@ from typing import Any
 
 def extract_json_object(text: str) -> dict[str, Any]:
     text = text.strip()
+    if text.startswith("<think>"):
+        think_end = text.find("</think>")
+        if think_end != -1:
+            text = text[think_end + len("</think>") :].strip()
     candidates = [text]
     fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
     candidates.extend(fenced)

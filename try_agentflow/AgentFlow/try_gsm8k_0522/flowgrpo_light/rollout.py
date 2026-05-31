@@ -22,6 +22,10 @@ if TYPE_CHECKING:
 class PlannerSample:
     prompt: str
     response: str
+    raw_prompt: str | None = None
+    system_prompt: str | None = None
+    rendered_prompt: str | None = None
+    generation_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

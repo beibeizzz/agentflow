@@ -16,23 +16,64 @@ def _vllm_engine_name(model_name: str) -> str:
     return model_name if model_name.startswith("vllm-") else f"vllm-{model_name}"
 
 
+def _policy_generation_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    generation_kwargs: dict[str, Any] = {}
+    if "max_new_tokens" in kwargs and kwargs["max_new_tokens"] is not None:
+        generation_kwargs["max_new_tokens"] = int(kwargs["max_new_tokens"])
+    elif "max_tokens" in kwargs and kwargs["max_tokens"] is not None:
+        generation_kwargs["max_new_tokens"] = int(kwargs["max_tokens"])
+    if "temperature" in kwargs and kwargs["temperature"] is not None:
+        generation_kwargs["temperature"] = float(kwargs["temperature"])
+    if "top_p" in kwargs and kwargs["top_p"] is not None:
+        generation_kwargs["top_p"] = float(kwargs["top_p"])
+    if "do_sample" in kwargs and kwargs["do_sample"] is not None:
+        generation_kwargs["do_sample"] = bool(kwargs["do_sample"])
+    return generation_kwargs
+
+
+def _planner_sample(
+    *,
+    raw_prompt: str,
+    system_prompt: str | None,
+    generation_kwargs: dict[str, Any],
+    generated: GeneratedResponse,
+) -> PlannerSample:
+    return PlannerSample(
+        prompt=generated.prompt,
+        rendered_prompt=generated.prompt,
+        raw_prompt=raw_prompt,
+        system_prompt=system_prompt,
+        generation_kwargs=dict(generation_kwargs),
+        response=generated.response,
+    )
+
+
 @dataclass
 class AgentFlowPlannerEngine:
     policy: Any
     think_mode: str = "default"
     samples: list[PlannerSample] = field(default_factory=list)
 
-    def __call__(self, prompt: Any, *, system_prompt: str | None = None, **_: Any) -> str:
+    def __call__(self, prompt: Any, *, system_prompt: str | None = None, **kwargs: Any) -> str:
         if isinstance(prompt, list):
             text_prompt = "\n".join(str(item) for item in prompt if isinstance(item, str))
         else:
             text_prompt = str(prompt)
+        generation_kwargs = _policy_generation_kwargs(kwargs)
         generated: GeneratedResponse = self.policy.generate_for_agentflow(
             text_prompt,
             system_prompt=system_prompt,
             think_mode=self.think_mode,
+            **generation_kwargs,
         )
-        self.samples.append(PlannerSample(prompt=generated.prompt, response=generated.response))
+        self.samples.append(
+            _planner_sample(
+                raw_prompt=text_prompt,
+                system_prompt=system_prompt,
+                generation_kwargs=generation_kwargs,
+                generated=generated,
+            )
+        )
         return generated.response
 
     def clear(self) -> None:
@@ -43,6 +84,7 @@ class AgentFlowPlannerEngine:
 class _PlannerBatchRequest:
     prompt: str
     system_prompt: str | None
+    generation_kwargs: dict[str, Any]
     samples: list[PlannerSample]
     future: concurrent.futures.Future[str]
 
@@ -52,12 +94,17 @@ class BatchedAgentFlowPlannerProxy:
         self.engine = engine
         self.samples: list[PlannerSample] = []
 
-    def __call__(self, prompt: Any, *, system_prompt: str | None = None, **_: Any) -> str:
+    def __call__(self, prompt: Any, *, system_prompt: str | None = None, **kwargs: Any) -> str:
         if isinstance(prompt, list):
             text_prompt = "\n".join(str(item) for item in prompt if isinstance(item, str))
         else:
             text_prompt = str(prompt)
-        return self.engine.submit(text_prompt, system_prompt=system_prompt, samples=self.samples)
+        return self.engine.submit(
+            text_prompt,
+            system_prompt=system_prompt,
+            generation_kwargs=_policy_generation_kwargs(kwargs),
+            samples=self.samples,
+        )
 
     def clear(self) -> None:
         self.samples.clear()
@@ -84,11 +131,26 @@ class BatchedAgentFlowPlannerEngine:
     def create_proxy(self) -> BatchedAgentFlowPlannerProxy:
         return BatchedAgentFlowPlannerProxy(self)
 
-    def submit(self, prompt: str, *, system_prompt: str | None, samples: list[PlannerSample]) -> str:
+    def submit(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None,
+        generation_kwargs: dict[str, Any],
+        samples: list[PlannerSample],
+    ) -> str:
         if self._closed:
             raise RuntimeError("Batched planner engine is closed")
         future: concurrent.futures.Future[str] = concurrent.futures.Future()
-        self._queue.put(_PlannerBatchRequest(prompt=prompt, system_prompt=system_prompt, samples=samples, future=future))
+        self._queue.put(
+            _PlannerBatchRequest(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                generation_kwargs=generation_kwargs,
+                samples=samples,
+                future=future,
+            )
+        )
         return future.result()
 
     def close(self) -> None:
@@ -122,13 +184,40 @@ class BatchedAgentFlowPlannerEngine:
 
     def _generate_batch(self, batch: list[_PlannerBatchRequest]) -> None:
         try:
+            generation_kwargs = dict(batch[0].generation_kwargs)
+            if any(request.generation_kwargs != generation_kwargs for request in batch):
+                for request in batch:
+                    generated = self.policy.generate_for_agentflow(
+                        request.prompt,
+                        system_prompt=request.system_prompt,
+                        think_mode=self.think_mode,
+                        **request.generation_kwargs,
+                    )
+                    request.samples.append(
+                        _planner_sample(
+                            raw_prompt=request.prompt,
+                            system_prompt=request.system_prompt,
+                            generation_kwargs=request.generation_kwargs,
+                            generated=generated,
+                        )
+                    )
+                    request.future.set_result(generated.response)
+                return
             generated = self.policy.generate_many_for_agentflow(
                 [request.prompt for request in batch],
                 system_prompts=[request.system_prompt for request in batch],
                 think_mode=self.think_mode,
+                **generation_kwargs,
             )
             for request, item in zip(batch, generated, strict=True):
-                request.samples.append(PlannerSample(prompt=item.prompt, response=item.response))
+                request.samples.append(
+                    _planner_sample(
+                        raw_prompt=request.prompt,
+                        system_prompt=request.system_prompt,
+                        generation_kwargs=request.generation_kwargs,
+                        generated=item,
+                    )
+                )
                 request.future.set_result(item.response)
         except Exception as exc:
             for request in batch:

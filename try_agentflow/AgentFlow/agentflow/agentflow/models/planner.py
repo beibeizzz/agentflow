@@ -377,16 +377,13 @@ Remember: Your response MUST end with the Context, Sub-Goal, and Tool Name secti
                         """
         elif calculator_only:
             prompt_generate_next_step = f"""
-{self._think_directive()}You should plan the next calculator step and provide the arithmetic expression.
+{self._think_directive()}You should choose the next calculator step and provide the arithmetic expression.
 You are strict to output a JSON. 
-
+Use the Judge feedback first.
+Do not repeat any previous Calculation or Sub_goal in Memory.
 Problem: {question}
 Query Analysis: {query_analysis}
 Memory: {memory.get_actions()}
-
-Memory Notes:
-- Do not repeat any previous Calculation or Sub_goal in the memory.
-- Judge is high-priority feedback. Use Judge to decide the next Sub_goal and Calculation.
 
 Rules:
 - Return only one JSON object.

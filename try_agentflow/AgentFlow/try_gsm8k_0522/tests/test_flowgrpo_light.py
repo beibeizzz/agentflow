@@ -32,6 +32,22 @@ class TestFlowGRPOLight(unittest.TestCase):
         self.assertEqual(sub_goal, "Compute brother grapes")
         self.assertEqual(calculation, "6 * 5")
 
+    def test_parse_planner_response_matches_agentflow_calculator_only_style(self):
+        sub_goal, calculation = parse_planner_response(
+            '{"Sub_goal": "List quantities", "Calculation": "Adam: 50 + Betty: 65"}'
+        )
+
+        self.assertEqual(sub_goal, "List quantities")
+        self.assertEqual(calculation, "Adam: 50 + Betty: 65")
+
+    def test_parse_planner_response_strips_leading_think_block_like_agentflow(self):
+        sub_goal, calculation = parse_planner_response(
+            '<think>hidden reasoning</think>\n{"Sub_goal": "Add", "Calculation": "1 + 1"}'
+        )
+
+        self.assertEqual(sub_goal, "Add")
+        self.assertEqual(calculation, "1 + 1")
+
     def test_planner_prompt_contains_training_contract(self):
         prompt = build_planner_prompt(
             question="What is 1+1?",
