@@ -34,11 +34,23 @@ class TestGSM8KScripts(unittest.TestCase):
                 "base",
                 "--max-tokens",
                 "2048",
+                "--think-mode",
+                "off",
+                "--query-analysis-think-mode",
+                "on",
+                "--final-output-think-mode",
+                "off",
+                "--verifier-think-mode",
+                "default",
             ]
         )
 
         self.assertEqual(args.output_types, "base")
         self.assertEqual(args.max_tokens, 2048)
+        self.assertEqual(args.think_mode, "off")
+        self.assertEqual(args.query_analysis_think_mode, "on")
+        self.assertEqual(args.final_output_think_mode, "off")
+        self.assertEqual(args.verifier_think_mode, "default")
 
     def test_smoke_script_runs_calculator_steps_one_to_ten(self):
         script = (ROOT / "run_smoke.sh").read_text(encoding="utf-8")
@@ -82,6 +94,10 @@ class TestGSM8KScripts(unittest.TestCase):
                 max_tokens=2048,
                 temperature=0.0,
                 subagent_config_path=None,
+                think_mode="off",
+                query_analysis_think_mode="on",
+                final_output_think_mode="off",
+                verifier_think_mode="default",
             )
         finally:
             run_gsm8k_agentflow.bootstrap_agentflow_runtime = original_bootstrap
@@ -96,6 +112,10 @@ class TestGSM8KScripts(unittest.TestCase):
 
         self.assertEqual(captured["enabled_tools"], ["Calculator_Tool"])
         self.assertEqual(captured["tool_engine"], ["Default"])
+        self.assertEqual(captured["think_mode"], "off")
+        self.assertEqual(captured["query_analysis_think_mode"], "on")
+        self.assertEqual(captured["final_output_think_mode"], "off")
+        self.assertEqual(captured["verifier_think_mode"], "default")
 
     def test_runner_passes_raw_question_to_solver_not_wrapped_query(self):
         captured = {}
@@ -141,6 +161,10 @@ class TestGSM8KScripts(unittest.TestCase):
                     max_tokens=2048,
                     temperature=0.0,
                     subagent_config=Path("subagent_model_config.json"),
+                    think_mode="off",
+                    query_analysis_think_mode="on",
+                    final_output_think_mode="off",
+                    verifier_think_mode="default",
                     overwrite=True,
                     stop_on_error=False,
                 )
@@ -158,6 +182,10 @@ class TestGSM8KScripts(unittest.TestCase):
         self.assertEqual(captured["solved_question"], "What is 1+1?")
         self.assertEqual(payload["query"], "What is 1+1?")
         self.assertEqual(payload["original_query"], row["query"])
+        self.assertEqual(payload["think_mode"], "off")
+        self.assertEqual(payload["query_analysis_think_mode"], "on")
+        self.assertEqual(payload["final_output_think_mode"], "off")
+        self.assertEqual(payload["verifier_think_mode"], "default")
 
     def test_vllm_server_check_uses_no_proxy_opener(self):
         captured = {}

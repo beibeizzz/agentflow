@@ -8,6 +8,15 @@ frozen_temperature: 0.0
 frozen_max_tokens: 512
 frozen_timeout: 120
 
+rollout_backend: agentflow
+think_mode: default
+query_analysis_think_mode: default
+final_output_think_mode: default
+verifier_think_mode: default
+output_types: direct
+max_time: 120
+max_tokens: 2048
+
 seed: 0
 epochs: 1
 max_train_items: 1000

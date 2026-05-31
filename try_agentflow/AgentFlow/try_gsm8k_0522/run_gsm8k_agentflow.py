@@ -69,6 +69,10 @@ def construct_solver(
     max_tokens: int,
     temperature: float,
     subagent_config_path: Path | None,
+    think_mode: str = "default",
+    query_analysis_think_mode: str | None = None,
+    final_output_think_mode: str | None = None,
+    verifier_think_mode: str | None = None,
 ):
     bootstrap_agentflow_runtime()
     from agentflow.solver import construct_solver as build_solver
@@ -84,6 +88,10 @@ def construct_solver(
         max_time=max_time,
         max_tokens=max_tokens,
         temperature=temperature,
+        think_mode=think_mode,
+        query_analysis_think_mode=query_analysis_think_mode or think_mode,
+        final_output_think_mode=final_output_think_mode or think_mode,
+        verifier_think_mode=verifier_think_mode or think_mode,
         verbose=False,
     )
     if subagent_config_path is not None and not subagent_config_path.is_absolute():
@@ -110,6 +118,9 @@ def run_examples(args: argparse.Namespace) -> None:
         data = data[: args.limit]
 
     check_vllm_server(args.base_url, served_model_name(args.llm_engine_name))
+    query_analysis_think_mode = args.query_analysis_think_mode or args.think_mode
+    final_output_think_mode = args.final_output_think_mode or args.think_mode
+    verifier_think_mode = args.verifier_think_mode or args.think_mode
     solver = construct_solver(
         llm_engine_name=args.llm_engine_name,
         base_url=args.base_url,
@@ -119,6 +130,10 @@ def run_examples(args: argparse.Namespace) -> None:
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         subagent_config_path=args.subagent_config,
+        think_mode=args.think_mode,
+        query_analysis_think_mode=query_analysis_think_mode,
+        final_output_think_mode=final_output_think_mode,
+        verifier_think_mode=verifier_think_mode,
     )
     available_tools = list(getattr(solver.planner, "available_tools", []))
     print(f"AgentFlow available tools: {available_tools}")
@@ -153,6 +168,10 @@ def run_examples(args: argparse.Namespace) -> None:
             "max_steps": args.max_steps,
             "max_time": args.max_time,
             "max_tokens": args.max_tokens,
+            "think_mode": args.think_mode,
+            "query_analysis_think_mode": query_analysis_think_mode,
+            "final_output_think_mode": final_output_think_mode,
+            "verifier_think_mode": verifier_think_mode,
             "available_tools": available_tools,
         }
         try:
@@ -202,6 +221,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-time", type=int, default=120)
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--think-mode", choices=["default", "on", "off"], default="default")
+    parser.add_argument("--query-analysis-think-mode", choices=["default", "on", "off"], default=None)
+    parser.add_argument("--final-output-think-mode", choices=["default", "on", "off"], default=None)
+    parser.add_argument("--verifier-think-mode", choices=["default", "on", "off"], default=None)
     parser.add_argument("--subagent-config", type=Path, default=SCRIPT_DIR / "subagent_model_config.json")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--stop-on-error", action="store_true")

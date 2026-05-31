@@ -67,6 +67,7 @@ def train_step(
 ) -> float | None:
     import torch
 
+    policy.train()
     loss_terms: list[torch.Tensor] = []
     for rollout, advantage in zip(rollouts, advantages, strict=True):
         if abs(advantage) < 1e-8:
@@ -115,6 +116,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lora-alpha", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--kl-coef", type=float, default=None)
+    parser.add_argument("--rollout-backend", choices=["agentflow", "light"], default=None)
+    parser.add_argument("--think-mode", choices=["default", "on", "off"], default=None)
+    parser.add_argument("--query-analysis-think-mode", choices=["default", "on", "off"], default=None)
+    parser.add_argument("--final-output-think-mode", choices=["default", "on", "off"], default=None)
+    parser.add_argument("--verifier-think-mode", choices=["default", "on", "off"], default=None)
     return parser.parse_args(argv)
 
 
@@ -140,6 +146,36 @@ def main(argv: list[str] | None = None) -> None:
         args.learning_rate if args.learning_rate is not None else config_value(config, "learning_rate", 5e-5)
     )
     kl_coef = float(args.kl_coef if args.kl_coef is not None else config_value(config, "kl_coef", 0.0))
+    rollout_backend = str(
+        args.rollout_backend if args.rollout_backend is not None else config_value(config, "rollout_backend", "agentflow")
+    )
+    if rollout_backend not in {"agentflow", "light"}:
+        raise SystemExit(f"Unsupported rollout_backend: {rollout_backend}")
+    think_mode = str(args.think_mode if args.think_mode is not None else config_value(config, "think_mode", "default"))
+    if think_mode not in {"default", "on", "off"}:
+        raise SystemExit(f"Unsupported think_mode: {think_mode}")
+    query_analysis_think_mode = str(
+        args.query_analysis_think_mode
+        if args.query_analysis_think_mode is not None
+        else config_value(config, "query_analysis_think_mode", think_mode)
+    )
+    final_output_think_mode = str(
+        args.final_output_think_mode
+        if args.final_output_think_mode is not None
+        else config_value(config, "final_output_think_mode", think_mode)
+    )
+    verifier_think_mode = str(
+        args.verifier_think_mode
+        if args.verifier_think_mode is not None
+        else config_value(config, "verifier_think_mode", think_mode)
+    )
+    for name, mode in {
+        "query_analysis_think_mode": query_analysis_think_mode,
+        "final_output_think_mode": final_output_think_mode,
+        "verifier_think_mode": verifier_think_mode,
+    }.items():
+        if mode not in {"default", "on", "off"}:
+            raise SystemExit(f"Unsupported {name}: {mode}")
 
     if not model_path.exists() and len(model_path.parts) > 2:
         raise SystemExit(
@@ -162,6 +198,7 @@ def main(argv: list[str] | None = None) -> None:
         base_url=frozen_base_url,
         model=frozen_model,
         timeout=int(config_value(config, "frozen_timeout", 60)),
+        think_mode=think_mode,
     )
     frozen_client.check_model()
 
@@ -183,6 +220,43 @@ def main(argv: list[str] | None = None) -> None:
         weight_decay=float(config_value(config, "weight_decay", 0.0)),
     )
 
+    if rollout_backend == "agentflow":
+        from flowgrpo_light.agentflow_rollout import build_agentflow_rollout_runner
+
+        subagent_config = config_value(config, "subagent_config", None)
+        rollout_runner = build_agentflow_rollout_runner(
+            policy=policy,
+            frozen_model=frozen_model,
+            frozen_base_url=frozen_base_url,
+            frozen_temperature=float(config_value(config, "frozen_temperature", 0.0)),
+            output_types=str(config_value(config, "output_types", "direct")),
+            max_steps=max_steps,
+            max_time=int(config_value(config, "max_time", 120)),
+            max_tokens=int(config_value(config, "max_tokens", 2048)),
+            subagent_config_path=Path(subagent_config) if subagent_config else None,
+            think_mode=think_mode,
+            query_analysis_think_mode=query_analysis_think_mode,
+            final_output_think_mode=final_output_think_mode,
+            verifier_think_mode=verifier_think_mode,
+        )
+
+        def collect_rollout(row: dict[str, Any]) -> Any:
+            return rollout_runner.run(row)
+
+    else:
+
+        def collect_rollout(row: dict[str, Any]) -> Any:
+            return run_rollout(
+                row,
+                policy=policy,
+                frozen_client=frozen_client,
+                max_steps=max_steps,
+                frozen_temperature=float(config_value(config, "frozen_temperature", 0.0)),
+                frozen_max_tokens=int(config_value(config, "frozen_max_tokens", 512)),
+                query_analysis_think_mode=query_analysis_think_mode,
+                final_output_think_mode=final_output_think_mode,
+            )
+
     rows = load_rows(train_file)[:max_train_items]
     random.shuffle(rows)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -192,14 +266,7 @@ def main(argv: list[str] | None = None) -> None:
     for epoch in range(epochs):
         for row_index, row in enumerate(rows):
             rollouts = [
-                run_rollout(
-                    row,
-                    policy=policy,
-                    frozen_client=frozen_client,
-                    max_steps=max_steps,
-                    frozen_temperature=float(config_value(config, "frozen_temperature", 0.0)),
-                    frozen_max_tokens=int(config_value(config, "frozen_max_tokens", 512)),
-                )
+                collect_rollout(row)
                 for _ in range(group_size)
             ]
             rewards = [rollout.reward for rollout in rollouts]
@@ -223,6 +290,11 @@ def main(argv: list[str] | None = None) -> None:
                 "loss": loss,
                 "answers": [rollout.answer for rollout in rollouts],
                 "errors": [rollout.errors for rollout in rollouts],
+                "rollout_backend": rollout_backend,
+                "think_mode": think_mode,
+                "query_analysis_think_mode": query_analysis_think_mode,
+                "final_output_think_mode": final_output_think_mode,
+                "verifier_think_mode": verifier_think_mode,
             }
             append_jsonl(metrics_path, record)
             print(

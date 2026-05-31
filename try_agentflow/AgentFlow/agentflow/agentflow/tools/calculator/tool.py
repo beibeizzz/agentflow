@@ -36,7 +36,7 @@ class Calculator_Tool(BaseTool):
             ),
             input_types={
                 "expression": (
-                    "str - Arithmetic expression using +, -, *, /, %, parentheses, decimals. "
+                    "str - Arithmetic expression using +, -, *, /, parentheses, decimals. "
                 )
             },
             output_type="str - The numeric result of the evaluated expression.",
@@ -44,7 +44,7 @@ class Calculator_Tool(BaseTool):
             ],
             user_metadata={
                 "limitations": (
-                    'Only arithmetic expressions are allowed. Variables, functions, text, units, and "=" signs are not allowed. Percent values such as 20% are supported and treated as 20/100.'
+                    'Only arithmetic expressions are allowed. Variables, functions, text, units, and "=" signs are not allowed.'
                 ),
             },
             model_string=model_string,

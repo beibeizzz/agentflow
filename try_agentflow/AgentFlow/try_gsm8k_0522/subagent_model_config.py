@@ -7,14 +7,14 @@ from typing import Any
 
 
 BASELINE_SYSTEM_PROMPT = (
-    "You are a careful grade-school math problem solver. "
+    "You are good at math problems. "
     "Use only the information in the problem. "
     "Keep the reasoning concise and arithmetic-focused."
 )
 
 BASELINE_GENERATION_CONFIG: dict[str, Any] = {
     "system_prompt": BASELINE_SYSTEM_PROMPT,
-    "max_tokens": 512,
+    "max_tokens": 1024,
     "temperature": 0.0,
     "top_p": 0.95,
     "frequency_penalty": 0,

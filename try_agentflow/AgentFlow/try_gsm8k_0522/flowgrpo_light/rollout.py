@@ -42,6 +42,8 @@ def run_rollout(
     max_steps: int,
     frozen_temperature: float,
     frozen_max_tokens: int,
+    query_analysis_think_mode: str = "default",
+    final_output_think_mode: str = "default",
 ) -> RolloutResult:
     question = str(row["question"])
     gold_answer = str(row.get("result") or row.get("gold_answer") or row.get("extra_info", {}).get("gold_answer"))
@@ -51,6 +53,7 @@ def run_rollout(
         system_prompt=QUERY_ANALYSIS_SYSTEM_PROMPT,
         temperature=frozen_temperature,
         max_tokens=min(frozen_max_tokens, 512),
+        think_mode=query_analysis_think_mode,
     )
     memory: dict[str, Any] = {}
     samples: list[PlannerSample] = []
@@ -89,6 +92,7 @@ def run_rollout(
         build_final_prompt(question, query_analysis, memory),
         temperature=frozen_temperature,
         max_tokens=min(frozen_max_tokens, 128),
+        think_mode=final_output_think_mode,
     )
     reward = compute_reward(final_answer, gold_answer)
     return RolloutResult(

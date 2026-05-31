@@ -11,9 +11,13 @@ mkdir -p logs/full/problems results/full summary data
 
 TOTAL="${TOTAL:-1319}"
 WORKERS="${WORKERS:-4}"
+THINK_MODE="${THINK_MODE:-default}"
+QUERY_ANALYSIS_THINK_MODE="${QUERY_ANALYSIS_THINK_MODE:-$THINK_MODE}"
+FINAL_OUTPUT_THINK_MODE="${FINAL_OUTPUT_THINK_MODE:-$THINK_MODE}"
+VERIFIER_THINK_MODE="${VERIFIER_THINK_MODE:-$THINK_MODE}"
 CHUNK_SIZE=$(( (TOTAL + WORKERS - 1) / WORKERS ))
 
-echo "Running full GSM8K with TOTAL=$TOTAL WORKERS=$WORKERS CHUNK_SIZE=$CHUNK_SIZE" | tee logs/full/run.log
+echo "Running full GSM8K with TOTAL=$TOTAL WORKERS=$WORKERS CHUNK_SIZE=$CHUNK_SIZE THINK_MODE=$THINK_MODE QUERY_ANALYSIS_THINK_MODE=$QUERY_ANALYSIS_THINK_MODE FINAL_OUTPUT_THINK_MODE=$FINAL_OUTPUT_THINK_MODE VERIFIER_THINK_MODE=$VERIFIER_THINK_MODE" | tee logs/full/run.log
 
 pids=()
 for worker in $(seq 0 $((WORKERS - 1))); do
@@ -34,6 +38,10 @@ for worker in $(seq 0 $((WORKERS - 1))); do
     --max-steps "${MAX_STEPS:-2}" \
     --max-time "${MAX_TIME:-120}" \
     --max-tokens "${MAX_TOKENS:-2048}" \
+    --think-mode "$THINK_MODE" \
+    --query-analysis-think-mode "$QUERY_ANALYSIS_THINK_MODE" \
+    --final-output-think-mode "$FINAL_OUTPUT_THINK_MODE" \
+    --verifier-think-mode "$VERIFIER_THINK_MODE" \
     > "$worker_log" 2>&1 &
   pids+=("$!")
 done

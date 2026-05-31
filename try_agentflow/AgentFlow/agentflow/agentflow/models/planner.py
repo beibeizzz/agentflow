@@ -11,7 +11,7 @@ from agentflow.models.memory import Memory
 
 
 DEFAULT_GSM8K_DIRECT_SYSTEM_PROMPT = (
-    "You are a careful grade-school math problem solver. "
+    "You are good at math problems. "
     "Use only the information in the problem. "
     "Keep the reasoning concise and arithmetic-focused."
 )
@@ -21,13 +21,19 @@ class Planner:
     def __init__(self, llm_engine_name: str, llm_engine_fixed_name: str = "gpt-4o",
                  toolbox_metadata: dict = None, available_tools: List = None,
                  verbose: bool = False, base_url: str = None, is_multimodal: bool = False,
-                 check_model: bool = True, temperature : float = .0):
+                 check_model: bool = True, temperature : float = .0,
+                 think_mode: str = "default",
+                 query_analysis_think_mode: str = None,
+                 final_output_think_mode: str = None):
         self.llm_engine_name = llm_engine_name
         self.llm_engine_fixed_name = llm_engine_fixed_name
         self.is_multimodal = is_multimodal
+        self.think_mode = think_mode
+        self.query_analysis_think_mode = query_analysis_think_mode or think_mode
+        self.final_output_think_mode = final_output_think_mode or think_mode
         # self.llm_engine_mm = create_llm_engine(model_string=llm_engine_name, is_multimodal=False, base_url=base_url, temperature = temperature)
-        self.llm_engine_fixed = create_llm_engine(model_string=llm_engine_fixed_name, is_multimodal=False, temperature = temperature)
-        self.llm_engine = create_llm_engine(model_string=llm_engine_name, is_multimodal=False, base_url=base_url, temperature = temperature)
+        self.llm_engine_fixed = create_llm_engine(model_string=llm_engine_fixed_name, is_multimodal=False, temperature = temperature, think_mode=think_mode)
+        self.llm_engine = create_llm_engine(model_string=llm_engine_name, is_multimodal=False, base_url=base_url, temperature = temperature, think_mode=think_mode)
         self.toolbox_metadata = toolbox_metadata if toolbox_metadata is not None else {}
         self.available_tools = available_tools if available_tools is not None else []
         self.generation_configs = {}
@@ -36,6 +42,9 @@ class Planner:
 
     def _generation_config(self, key: str) -> Dict[str, Any]:
         return dict(getattr(self, "generation_configs", {}).get(key, {}))
+
+    def _think_directive(self) -> str:
+        return "/no_think\n" if getattr(self, "think_mode", "default") == "off" else ""
 
     def get_image_info(self, image_path: str) -> Dict[str, Any]:
         image_info = {}
@@ -82,11 +91,6 @@ class Planner:
                 json_data["query_analysis_disabled"] = True
                 json_data["query_analysis_prompt"] = None
                 json_data["query_analysis_system_prompt"] = query_config.get("system_prompt")
-                json_data["query_analysis_generation_config"] = {
-                    key: value
-                    for key, value in query_config.items()
-                    if key not in {"enabled", "system_prompt"}
-                }
             return ""
 
         if self.is_multimodal:
@@ -118,8 +122,7 @@ Please present your analysis in a clear, structured format.
                         """
         elif calculator_only:
             query_prompt = f"""
-Task:
-Solve the following GSM8K math word problem. Explain the general solution approach step by step and the final goal to this problem in a concise manner, without delving into specific calculations.
+Explain the general solution approach step by step and the final goal to the problem in a concise manner, without delving into specific calculations.
 
 Inputs:
 - Problem: {question}
@@ -208,14 +211,12 @@ Problem:
                     if key != "enabled"
                 }
             )
+        query_think_mode = getattr(self, "query_analysis_think_mode", getattr(self, "think_mode", "default"))
+        if query_think_mode != "default":
+            query_kwargs["think_mode"] = query_think_mode
         if json_data is not None:
             json_data["query_analysis_prompt"] = input_data
             json_data["query_analysis_system_prompt"] = query_kwargs.get("system_prompt")
-            json_data["query_analysis_generation_config"] = {
-                key: value
-                for key, value in query_kwargs.items()
-                if key not in {"response_format", "system_prompt"}
-            }
         self.query_analysis = self.llm_engine_fixed(input_data, **query_kwargs)
 
         return str(self.query_analysis).strip()
@@ -376,24 +377,23 @@ Remember: Your response MUST end with the Context, Sub-Goal, and Tool Name secti
                         """
         elif calculator_only:
             prompt_generate_next_step = f"""
-You are Planner and you should plan the next calculator step and provide the arithmetic expression.
+{self._think_directive()}You should plan the next calculator step and provide the arithmetic expression.
+You are strict to output a JSON. 
 
 Problem: {question}
 Query Analysis: {query_analysis}
 Memory: {memory.get_actions()}
 
 Memory Notes:
-- If Memory is not empty, inspect the memory of previous steps. 
-- Do not repeat any previous Calculation or Sub_goal.
+- Do not repeat any previous Calculation or Sub_goal in the memory.
 - Judge is high-priority feedback. Use Judge to decide the next Sub_goal and Calculation.
 
 Rules:
 - Return only one JSON object.
 - "Sub_goal": briefly say what this calculation computes.
-- "Calculation": write only the arithmetic expression and must match this regex: ^[0-9+\-*/().% ]+$
-- Use only numbers from the problem or previous results.
-- In calculation, use only digits, +, -, *, /, %, parentheses, and decimals.
-- Do not include variables, words, units, "=", , currency symbols, commas, explanatory text, or the result in Calculation.
+- "Calculation": write only the arithmetic expression and must match this regex: ^[0-9+\-*/(). ]+$
+- In calculation, use only digits, +, -, *, /, parentheses, and decimals.
+- In calculation, do not include variables, words, units, "=", , currency symbols, commas, explanatory text, or the result.
 
 JSON example:
 {{
@@ -443,11 +443,6 @@ Rules:
         if json_data is not None:
             json_data[f"action_predictor_{step_count}_prompt"] = prompt_generate_next_step
             json_data[f"action_predictor_{step_count}_system_prompt"] = generation_kwargs.get("system_prompt")
-            json_data[f"action_predictor_{step_count}_generation_config"] = {
-                key: value
-                for key, value in generation_kwargs.items()
-                if key not in {"response_format", "system_prompt"}
-            }
             json_data[f"action_predictor_{step_count}_response"] = str(next_step)
         return next_step
 
@@ -544,14 +539,12 @@ Instructions:
         # final_output = self.llm_engine_mm(input_data)
         # final_output = self.llm_engine(input_data)
         generation_kwargs = self._generation_config("generator") if calculator_only else {}
+        final_think_mode = getattr(self, "final_output_think_mode", getattr(self, "think_mode", "default"))
+        if final_think_mode != "default":
+            generation_kwargs["think_mode"] = final_think_mode
         if json_data is not None:
             json_data["final_output_prompt"] = input_data
             json_data["final_output_system_prompt"] = generation_kwargs.get("system_prompt")
-            json_data["final_output_generation_config"] = {
-                key: value
-                for key, value in generation_kwargs.items()
-                if key != "system_prompt"
-            }
         final_output = self.llm_engine_fixed(input_data, **generation_kwargs)
 
         return final_output
@@ -576,18 +569,11 @@ Answer:
 """
         elif calculator_only:
             prompt_generate_final_output = f"""
-
-
-Task:
 Return the final numeric answer based on the comprehensive Analysis and Memory.
 
-Problem:
-{question}
-
+Problem:{question}
 Analysis: {self.query_analysis}
-
-Memory:
-{memory.get_actions()}
+Memory:{memory.get_actions()}
 
 Rules:
 - Memory contains the previous sub-goals and command actions.
@@ -628,14 +614,12 @@ Output Structure:
 
         # final_output = self.llm_engine(input_data)
         generation_kwargs = self._generation_config("generator") if calculator_only else {}
+        final_think_mode = getattr(self, "final_output_think_mode", getattr(self, "think_mode", "default"))
+        if final_think_mode != "default":
+            generation_kwargs["think_mode"] = final_think_mode
         if json_data is not None:
             json_data["direct_output_prompt"] = input_data
             json_data["direct_output_system_prompt"] = generation_kwargs.get("system_prompt")
-            json_data["direct_output_generation_config"] = {
-                key: value
-                for key, value in generation_kwargs.items()
-                if key != "system_prompt"
-            }
         final_output = self.llm_engine_fixed(input_data, **generation_kwargs)
         # final_output = self.llm_engine_mm(input_data)
 

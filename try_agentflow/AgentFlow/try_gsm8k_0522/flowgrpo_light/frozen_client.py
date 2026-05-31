@@ -11,6 +11,7 @@ class FrozenClient:
     base_url: str
     model: str
     timeout: int = 60
+    think_mode: str = "default"
 
     def chat(
         self,
@@ -19,6 +20,7 @@ class FrozenClient:
         system_prompt: str | None = None,
         temperature: float = 0.0,
         max_tokens: int = 512,
+        think_mode: str | None = None,
     ) -> str:
         messages = []
         if system_prompt:
@@ -30,6 +32,11 @@ class FrozenClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        effective_think_mode = self.think_mode if think_mode is None else think_mode
+        if effective_think_mode in {"on", "off"}:
+            payload["chat_template_kwargs"] = {
+                "enable_thinking": effective_think_mode == "on",
+            }
         request = urllib.request.Request(
             self.base_url.rstrip("/") + "/chat/completions",
             data=json.dumps(payload).encode("utf-8"),

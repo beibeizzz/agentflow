@@ -66,6 +66,72 @@ class TestSubagentModelConfig(unittest.TestCase):
             self.assertEqual(captured["query_analysis"][key], expected[key])
             self.assertEqual(captured["planner_next_step"][key], expected[key])
 
+    def test_runtime_json_data_omits_generation_config_fields(self):
+        bootstrap_agentflow_runtime()
+        from agentflow.models.executor import Executor
+        from agentflow.models.formatters import MemoryVerification, NextStep, ToolCommand
+        from agentflow.models.memory import Memory
+        from agentflow.models.planner import Planner
+        from agentflow.models.verifier import Verifier
+
+        config = subagent_model_config.default_subagent_config()
+        memory = Memory()
+        memory.add_action(
+            1,
+            "Calculator_Tool",
+            "Calculate one plus one",
+            'execution = tool.execute(expression="1+1")',
+            "2",
+        )
+        payload = {}
+
+        planner = Planner.__new__(Planner)
+        planner.is_multimodal = False
+        planner.available_tools = ["Calculator_Tool"]
+        planner.toolbox_metadata = {"Calculator_Tool": {}}
+        planner.generation_configs = config
+        planner.llm_engine_fixed = lambda input_data, **kwargs: "analysis"
+        planner.llm_engine = lambda prompt, **kwargs: NextStep(sub_goal="Calculate", calculation="1+1")
+
+        planner.analyze_query("What is 1+1?", None, payload)
+        planner.generate_next_step("What is 1+1?", None, "analysis", memory, 1, 2, payload)
+        planner.generate_final_output("What is 1+1?", None, memory, payload)
+        planner.generate_direct_output("What is 1+1?", None, memory, payload)
+
+        executor = Executor.__new__(Executor)
+        executor.generation_configs = config
+        executor.llm_generate_tool_command = lambda prompt, **kwargs: ToolCommand(
+            analysis="",
+            explanation="",
+            command='execution = tool.execute(expression="1+1")',
+        )
+        executor.generate_tool_command(
+            "What is 1+1?",
+            None,
+            "1+1",
+            "Calculate one plus one",
+            "Calculator_Tool",
+            {},
+            1,
+            payload,
+        )
+
+        verifier = Verifier.__new__(Verifier)
+        verifier.is_multimodal = False
+        verifier.available_tools = ["Calculator_Tool"]
+        verifier.toolbox_metadata = {"Calculator_Tool": {}}
+        verifier.generation_configs = config
+        verifier.llm_engine_fixed = lambda input_data, **kwargs: MemoryVerification(
+            analysis="complete",
+            stop_signal=True,
+        )
+        verifier.verificate_context("What is 1+1?", None, "analysis", memory, 1, payload)
+
+        self.assertFalse(
+            [key for key in payload if key.endswith("_generation_config")],
+            payload,
+        )
+
     def test_apply_to_solver_sets_configs_on_all_components(self):
         solver = types.SimpleNamespace(
             planner=types.SimpleNamespace(),

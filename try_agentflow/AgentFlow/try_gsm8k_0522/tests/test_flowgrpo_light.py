@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT))
 from flowgrpo_light.calculator import format_number, safe_eval_calculation
 from flowgrpo_light.parsing import parse_planner_response
 from flowgrpo_light.prompts import build_planner_prompt
+from flowgrpo_light.train_light_grpo import parse_args
 
 
 class TestFlowGRPOLight(unittest.TestCase):
@@ -40,6 +41,12 @@ class TestFlowGRPOLight(unittest.TestCase):
         self.assertIn("Return only one JSON object", prompt)
         self.assertIn('"Calculation"', prompt)
         self.assertIn("Memory: {}", prompt)
+
+    def test_train_args_accept_think_mode(self):
+        args = parse_args(["--rollout-backend", "agentflow", "--think-mode", "off"])
+
+        self.assertEqual(args.rollout_backend, "agentflow")
+        self.assertEqual(args.think_mode, "off")
 
 
 if __name__ == "__main__":

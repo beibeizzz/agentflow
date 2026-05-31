@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from try_gsm8k_0522.flowgrpo_light_40g.eval_light_grpo import summarize_rewards
+from try_gsm8k_0522.flowgrpo_light_40g.eval_light_grpo import parse_args, summarize_rewards
 
 
 class FlowGrpoLight40GEvalTests(unittest.TestCase):
@@ -25,6 +25,12 @@ class FlowGrpoLight40GEvalTests(unittest.TestCase):
         self.assertEqual(summary["total"], 0)
         self.assertEqual(summary["correct"], 0)
         self.assertEqual(summary["accuracy"], 0.0)
+
+    def test_parse_args_accepts_agentflow_rollout_backend(self) -> None:
+        args = parse_args(["--rollout-backend", "agentflow", "--think-mode", "off"])
+
+        self.assertEqual(args.rollout_backend, "agentflow")
+        self.assertEqual(args.think_mode, "off")
 
 
 if __name__ == "__main__":

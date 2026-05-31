@@ -96,6 +96,45 @@ class PlannerPolicy:
         response = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
         return GeneratedResponse(prompt=prompt, response=response)
 
+    def render_agentflow_prompt(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        think_mode: str = "default",
+    ) -> str:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            template_kwargs = {}
+            if think_mode in {"on", "off"}:
+                template_kwargs["enable_thinking"] = think_mode == "on"
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                **template_kwargs,
+            )
+        if system_prompt:
+            return f"{system_prompt}\n\n{prompt}"
+        return prompt
+
+    def generate_for_agentflow(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        think_mode: str = "default",
+    ) -> GeneratedResponse:
+        rendered_prompt = self.render_agentflow_prompt(
+            prompt,
+            system_prompt=system_prompt,
+            think_mode=think_mode,
+        )
+        return self.generate(rendered_prompt)
+
     def sequence_logprob(self, prompt: str, response: str, *, use_adapter: bool = True) -> torch.Tensor:
         prompt_ids = self._tokenize(prompt, add_special_tokens=True)
         response_ids = self._tokenize(response, add_special_tokens=False)

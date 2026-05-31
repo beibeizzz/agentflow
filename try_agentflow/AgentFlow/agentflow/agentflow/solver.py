@@ -300,7 +300,11 @@ def construct_solver(llm_engine_name : str = "gpt-4o",
                      verbose : bool = True,
                      vllm_config_path : str = None,
                      base_url : str = None,
-                     temperature: float = 0.0
+                     temperature: float = 0.0,
+                     think_mode: str = "default",
+                     query_analysis_think_mode: str = None,
+                     final_output_think_mode: str = None,
+                     verifier_think_mode: str = None,
                      ):
 
     # Parse model_engine configuration
@@ -328,7 +332,10 @@ def construct_solver(llm_engine_name : str = "gpt-4o",
         available_tools=initializer.available_tools,
         verbose=verbose,
         base_url=base_url,
-        temperature=temperature
+        temperature=temperature,
+        think_mode=think_mode,
+        query_analysis_think_mode=query_analysis_think_mode or think_mode,
+        final_output_think_mode=final_output_think_mode or think_mode,
     )
 
     # Instantiate Verifier
@@ -339,7 +346,9 @@ def construct_solver(llm_engine_name : str = "gpt-4o",
         available_tools=initializer.available_tools,
         verbose=verbose,
         base_url=base_url if verifier_engine == llm_engine_name else None,
-        temperature=temperature
+        temperature=temperature,
+        think_mode=think_mode,
+        verifier_think_mode=verifier_think_mode or think_mode,
     )
 
     # Instantiate Memory
@@ -352,6 +361,7 @@ def construct_solver(llm_engine_name : str = "gpt-4o",
         verbose=verbose,
         base_url=base_url if executor_engine == llm_engine_name else None,  # Only use base_url for trainable model
         temperature=temperature,
+        think_mode=think_mode,
         tool_instances_cache=initializer.tool_instances_cache  # Pass the cached tool instances
     )
 

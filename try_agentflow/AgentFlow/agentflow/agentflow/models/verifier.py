@@ -14,12 +14,16 @@ class Verifier:
     def __init__(self, llm_engine_name: str, llm_engine_fixed_name: str = "dashscope",
                  toolbox_metadata: dict = None, available_tools: list = None,
                  verbose: bool = False, base_url: str = None, is_multimodal: bool = False,
-                 check_model: bool = True, temperature: float = .0):
+                 check_model: bool = True, temperature: float = .0,
+                 think_mode: str = "default",
+                 verifier_think_mode: str = None):
         self.llm_engine_name = llm_engine_name
         self.llm_engine_fixed_name = llm_engine_fixed_name
         self.is_multimodal = is_multimodal
-        self.llm_engine_fixed = create_llm_engine(model_string=llm_engine_fixed_name, is_multimodal=False, temperature=temperature)
-        self.llm_engine = create_llm_engine(model_string=llm_engine_name, is_multimodal=False, base_url=base_url, temperature=temperature)
+        self.think_mode = think_mode
+        self.verifier_think_mode = verifier_think_mode or think_mode
+        self.llm_engine_fixed = create_llm_engine(model_string=llm_engine_fixed_name, is_multimodal=False, temperature=temperature, think_mode=think_mode)
+        self.llm_engine = create_llm_engine(model_string=llm_engine_name, is_multimodal=False, base_url=base_url, temperature=temperature, think_mode=think_mode)
         self.toolbox_metadata = toolbox_metadata if toolbox_metadata is not None else {}
         self.available_tools = available_tools if available_tools is not None else []
         self.verbose = verbose
@@ -39,6 +43,10 @@ class Verifier:
             except Exception as e:
                 print(f"Error processing image file: {str(e)}")
         return image_info
+
+    def _think_directive(self) -> str:
+        think_mode = getattr(self, "verifier_think_mode", getattr(self, "think_mode", "default"))
+        return "/no_think\n" if think_mode == "off" else ""
 
     def verificate_context(self, question: str, image: str, query_analysis: str, memory: Memory, step_count: int = 0, json_data: Any = None) -> Any:
         image_info = self.get_image_info(image)
@@ -120,7 +128,7 @@ IMPORTANT: Your response MUST end with either 'Conclusion: STOP' or 'Conclusion:
 """
         elif calculator_only:
             prompt_memory_verification = f"""
-Decide whether memory has enough proof to solve the entire problem.
+{self._think_directive()}Decide whether memory has enough proof to solve the entire problem.
 Inspect Memory step by step.
 Initial Analysis and action_predictor_response is for reference only.
 Command/result pairs from executed tools count as proof.
@@ -137,11 +145,12 @@ Context:
 - Memory: {memory_actions}
 
 Rules:
+- First line must be Conclusion. Do not write any other Conclusion in the response. 
 - Don't solves the problem or repeat the raw problem. 
 - Analyse the missing logic if neccessary. 
 - Follow the formats above. Response only one of the two formats below.
 - Do not write another Conclusion later.
-- First line must be Conclusion. Do not write any other Conclusion in the response. 
+
 
 Response Format:
 Format1 (When memory not solves the entire problem):
@@ -199,15 +208,13 @@ IMPORTANT: The response must end with either "Conclusion: STOP" or "Conclusion: 
         generation_kwargs = {"response_format": MemoryVerification}
         if calculator_only:
             generation_kwargs.update(getattr(self, "generation_configs", {}).get("verifier", {}))
+        verifier_think_mode = getattr(self, "verifier_think_mode", getattr(self, "think_mode", "default"))
+        if verifier_think_mode != "default":
+            generation_kwargs["think_mode"] = verifier_think_mode
         stop_verification = self.llm_engine_fixed(input_data, **generation_kwargs)
         if json_data is not None:
             json_data[f"verifier_{step_count}_prompt"] = input_data
             json_data[f"verifier_{step_count}_system_prompt"] = generation_kwargs.get("system_prompt")
-            json_data[f"verifier_{step_count}_generation_config"] = {
-                key: value
-                for key, value in generation_kwargs.items()
-                if key not in {"response_format", "system_prompt"}
-            }
             json_data[f"verifier_{step_count}_response"] = str(stop_verification)
         return stop_verification
 

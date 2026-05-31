@@ -52,7 +52,7 @@ except NameError:
 class Executor:
     def __init__(self, llm_engine_name: str, root_cache_dir: str = "solver_cache",  num_threads: int = 1, max_time: int = 120,
     max_output_length: int = 100000, verbose: bool = False, base_url: str = None, check_model: bool = True, temperature: float = .0,
-    tool_instances_cache: dict = None):
+    tool_instances_cache: dict = None, think_mode: str = "default"):
         self.llm_engine_name = llm_engine_name
         self.root_cache_dir = root_cache_dir
         self.num_threads = num_threads
@@ -62,15 +62,16 @@ class Executor:
         self.base_url = base_url
         self.check_model = check_model
         self.temperature  = temperature
+        self.think_mode = think_mode
 
         # Store the tool instances cache
         self.tool_instances_cache = tool_instances_cache if tool_instances_cache is not None else {}
         self.generation_configs = {}
 
         if base_url is not None:
-            self.llm_generate_tool_command = create_llm_engine(model_string=self.llm_engine_name, is_multimodal=False, base_url=self.base_url, temperature = self.temperature)
+            self.llm_generate_tool_command = create_llm_engine(model_string=self.llm_engine_name, is_multimodal=False, base_url=self.base_url, temperature = self.temperature, think_mode=think_mode)
         else:
-            self.llm_generate_tool_command = create_llm_engine(model_string=self.llm_engine_name, is_multimodal=False, temperature = self.temperature)
+            self.llm_generate_tool_command = create_llm_engine(model_string=self.llm_engine_name, is_multimodal=False, temperature = self.temperature, think_mode=think_mode)
     
     def set_query_cache_dir(self, query_cache_dir):
         if query_cache_dir:
@@ -80,11 +81,13 @@ class Executor:
             self.query_cache_dir = os.path.join(self.root_cache_dir, timestamp)
         os.makedirs(self.query_cache_dir, exist_ok=True)
 
+    def _think_directive(self) -> str:
+        return "/no_think\n" if getattr(self, "think_mode", "default") == "off" else ""
+
     def generate_tool_command(self, question: str, image: str, context: str, sub_goal: str, tool_name: str, tool_metadata: Dict[str, Any], step_count: int = 0, json_data: Any = None) -> Any:
         if tool_name == "Calculator_Tool":
             prompt_generate_tool_command = f"""
-
-Your should extract the expression of Context into one executable Calculator_Tool command.
+{self._think_directive()}Your should extract the expression of Context into one executable Calculator_Tool command.
 
 Problem: {question}
 Context: {context}
@@ -153,11 +156,6 @@ execution = tool.execute(query=["Methanol", "function of hyperbola", "Fermat's L
         if json_data is not None:
             json_data[f"tool_commander_{step_count}_prompt"] = prompt_generate_tool_command
             json_data[f"tool_commander_{step_count}_system_prompt"] = generation_kwargs.get("system_prompt")
-            json_data[f"tool_commander_{step_count}_generation_config"] = {
-                key: value
-                for key, value in generation_kwargs.items()
-                if key not in {"response_format", "system_prompt"}
-            }
             json_data[f"tool_commander_{step_count}_response"] = str(tool_command)
 
         return tool_command

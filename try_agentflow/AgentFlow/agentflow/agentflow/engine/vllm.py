@@ -34,6 +34,7 @@ class ChatVLLM(EngineLM, CachedEngine):
         base_url=None,
         api_key=None,
         check_model: bool=True,
+        think_mode: str="default",
         **kwargs):
         """
         :param model_string:
@@ -45,6 +46,9 @@ class ChatVLLM(EngineLM, CachedEngine):
         self.use_cache = use_cache
         self.system_prompt = system_prompt
         self.is_multimodal = is_multimodal
+        if think_mode not in {"default", "on", "off"}:
+            raise ValueError(f"Unsupported think_mode: {think_mode}")
+        self.think_mode = think_mode
 
         if self.use_cache:
             root = platformdirs.user_cache_dir("agentflow")
@@ -63,6 +67,18 @@ class ChatVLLM(EngineLM, CachedEngine):
             )
         except Exception as e:
             raise ValueError(f"Failed to connect to VLLM server at {self.base_url}. Please ensure the server is running and try again.")
+
+    def _effective_think_mode(self, think_mode=None):
+        return self.think_mode if think_mode is None else think_mode
+
+    def _extra_body(self, extra_body=None, think_mode=None):
+        effective_think_mode = self._effective_think_mode(think_mode)
+        body = dict(extra_body or {})
+        if effective_think_mode in {"on", "off"}:
+            chat_template_kwargs = dict(body.get("chat_template_kwargs") or {})
+            chat_template_kwargs["enable_thinking"] = effective_think_mode == "on"
+            body["chat_template_kwargs"] = chat_template_kwargs
+        return body or None
 
     @retry(wait=wait_random_exponential(min=1, max=3), stop=stop_after_attempt(3))
     def generate(self, content: Union[str, List[Union[str, bytes]]], system_prompt=None, **kwargs):
@@ -102,27 +118,33 @@ class ChatVLLM(EngineLM, CachedEngine):
 
         sys_prompt_arg = system_prompt if system_prompt else self.system_prompt
 
+        effective_think_mode = self._effective_think_mode(kwargs.get("think_mode"))
         if self.use_cache:
-            cache_key = sys_prompt_arg + prompt
+            cache_key = f"think_mode={effective_think_mode}\n" + sys_prompt_arg + prompt
             cache_or_none = self._check_cache(cache_key)
             if cache_or_none is not None:
                 return cache_or_none
         
 
-        # Chat models without structured outputs
-        response = self.client.chat.completions.create(
-            model=self.model_string,
-            messages=[
+        request_kwargs = {
+            "model": self.model_string,
+            "messages": [
                 {"role": "system", "content": sys_prompt_arg},
                 {"role": "user", "content": prompt},
             ],
-            frequency_penalty=kwargs.get("frequency_penalty", 1.2),
-            presence_penalty=0,
-            stop=None,
-            temperature=kwargs.get("temperature", 0.7),
-            max_tokens=max_tokens,
-            top_p=top_p,
-        )
+            "frequency_penalty": kwargs.get("frequency_penalty", 1.2),
+            "presence_penalty": 0,
+            "stop": None,
+            "temperature": kwargs.get("temperature", 0.7),
+            "max_tokens": max_tokens,
+            "top_p": top_p,
+        }
+        extra_body = self._extra_body(kwargs.get("extra_body"), effective_think_mode)
+        if extra_body is not None:
+            request_kwargs["extra_body"] = extra_body
+
+        # Chat models without structured outputs
+        response = self.client.chat.completions.create(**request_kwargs)
         response = response.choices[0].message.content
 
         if self.use_cache:
@@ -153,28 +175,34 @@ class ChatVLLM(EngineLM, CachedEngine):
         return formatted_content
 
     def _generate_multimodal(
-        self, content: List[Union[str, bytes]], system_prompt=None, temperature=0, max_tokens=2048, top_p=0.99, response_format=None
+        self, content: List[Union[str, bytes]], system_prompt=None, temperature=0, max_tokens=2048, top_p=0.99, response_format=None, think_mode=None
     ):
         sys_prompt_arg = system_prompt if system_prompt else self.system_prompt
         formatted_content = self._format_content(content)
+        effective_think_mode = self._effective_think_mode(think_mode)
 
         if self.use_cache:
-            cache_key = sys_prompt_arg + json.dumps(formatted_content)
+            cache_key = f"think_mode={effective_think_mode}\n" + sys_prompt_arg + json.dumps(formatted_content)
             cache_or_none = self._check_cache(cache_key)
             if cache_or_none is not None:
                 return cache_or_none
 
 
-        response = self.client.chat.completions.create(
-            model=self.model_string,
-            messages=[
+        request_kwargs = {
+            "model": self.model_string,
+            "messages": [
                 {"role": "system", "content": sys_prompt_arg},
                 {"role": "user", "content": formatted_content},
             ],
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=top_p,
-        )
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": top_p,
+        }
+        extra_body = self._extra_body(think_mode=effective_think_mode)
+        if extra_body is not None:
+            request_kwargs["extra_body"] = extra_body
+
+        response = self.client.chat.completions.create(**request_kwargs)
         response_text = response.choices[0].message.content
 
         if self.use_cache:
