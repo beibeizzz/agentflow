@@ -9,16 +9,9 @@
 
 # Execution logs and results
 logs/
-results/
-summary/
 solver_cache/
 *.log
 
-# Data
-data/
-dataset/
-*.parquet
-*.jsonl
 
 # Python Cache
 __pycache__/
