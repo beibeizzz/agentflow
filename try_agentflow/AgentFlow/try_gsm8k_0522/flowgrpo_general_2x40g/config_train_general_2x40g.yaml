@@ -1,6 +1,6 @@
 model_path: /home/north/vllm_test/models/Qwen/Qwen3-0.6B
-train_file: try_gsm8k_0522/data/gsm8k_test_train_1000.json
-output_dir: try_gsm8k_0522/flowgrpo_light_40g/outputs/train_40g
+train_file: try_gsm8k_0522/data/gsm8k_train_learnable.json
+output_dir: try_gsm8k_0522/flowgrpo_general_2x40g/outputs/train_general_2x40g
 
 frozen_base_url: http://127.0.0.1:8000/v1
 frozen_model: Qwen3-0.6B
@@ -17,29 +17,32 @@ output_types: direct
 max_time: 120
 max_tokens: 512
 
+quiet_rollout: true
+
 seed: 0
 epochs: 1
-max_train_items: 2000
+max_train_items: 1000000
 question_batch_size: 4
-group_size: 4
-rollout_concurrency: 16
-planner_batch_size: 16
+group_size: 8
+rollout_concurrency: 32
+planner_batch_size: 32
 planner_batch_timeout_s: 0.10
-max_steps: 4
+max_steps: 3
 
 dtype: bfloat16
 gradient_checkpointing: true
-lora_rank: 16
-lora_alpha: 32
+lora_rank: 64
+lora_alpha: 128
 lora_dropout: 0.0
-learning_rate: 5.0e-5
+learning_rate: 2e-6
 weight_decay: 0.0
 max_grad_norm: 1.0
-kl_coef: 0.0
-
+planner_output_every: 50
+clip_range: 0.2
+policy_epochs: 2
 planner_max_new_tokens: 256
 planner_temperature: 1.2
 planner_top_p: 0.95
-logprob_micro_batch_size: 24
+logprob_micro_batch_size: 1
 
-save_every: 100
+save_every: 50

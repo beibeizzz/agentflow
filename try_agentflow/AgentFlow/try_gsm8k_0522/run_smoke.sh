@@ -32,7 +32,7 @@ run_variant() {
 
   mkdir -p "$result_dir" "$log_dir/problems"
 
-  echo "=== Smoke variant: $name output_types=$output_types max_steps=$max_steps max_tokens=${MAX_TOKENS:-256} think_mode=$THINK_MODE query_analysis_think_mode=$QUERY_ANALYSIS_THINK_MODE final_output_think_mode=$FINAL_OUTPUT_THINK_MODE verifier_think_mode=$VERIFIER_THINK_MODE ==="
+  echo "=== Smoke variant: $name output_types=$output_types max_steps=$max_steps max_tokens=${MAX_TOKENS:-512} think_mode=$THINK_MODE query_analysis_think_mode=$QUERY_ANALYSIS_THINK_MODE final_output_think_mode=$FINAL_OUTPUT_THINK_MODE verifier_think_mode=$VERIFIER_THINK_MODE ==="
   "$PYTHON" run_gsm8k_agentflow.py \
     --data-file data/gsm8k_smoke_20.json \
     --output-dir "$result_dir" \
@@ -40,7 +40,7 @@ run_variant() {
     --output-types "$output_types" \
     --max-steps "$max_steps" \
     --max-time "${MAX_TIME:-120}" \
-    --max-tokens "${MAX_TOKENS:-256}" \
+    --max-tokens "${MAX_TOKENS:-512}" \
     --think-mode "$THINK_MODE" \
     --query-analysis-think-mode "$QUERY_ANALYSIS_THINK_MODE" \
     --final-output-think-mode "$FINAL_OUTPUT_THINK_MODE" \
@@ -56,8 +56,5 @@ run_variant() {
     2>&1 | tee "$log_dir/score.log"
 }
 
-run_variant "smoke_calculator_steps1" "direct" "direct_output" 1
-run_variant "smoke_calculator_steps2" "direct" "direct_output" 2
-run_variant "smoke_calculator_steps3" "direct" "direct_output" 3
 run_variant "smoke_calculator_steps4" "direct" "direct_output" 4
-run_variant "smoke_calculator_steps5" "direct" "direct_output" 5
+

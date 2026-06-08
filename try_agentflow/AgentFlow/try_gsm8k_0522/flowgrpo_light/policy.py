@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 import torch
 import torch.nn.functional as F
@@ -11,6 +11,10 @@ import torch.nn.functional as F
 class GeneratedResponse:
     prompt: str
     response: str
+
+
+def _adapter_disabled(value: Any) -> bool:
+    return str(value).strip().lower() in {"", "0", "false", "none", "no", "off"}
 
 
 class PlannerPolicy:
@@ -26,12 +30,13 @@ class PlannerPolicy:
         top_p: float = 0.95,
         dtype: str = "bfloat16",
         gradient_checkpointing: bool = True,
-        adapter_path: str | None = None,
+        adapter_path: str | bool | None = None,
     ) -> None:
         from peft import LoraConfig, PeftModel, TaskType, get_peft_model
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        tokenizer_path = adapter_path or model_path
+        adapter_is_disabled = _adapter_disabled(adapter_path)
+        tokenizer_path = model_path if adapter_is_disabled else adapter_path or model_path
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -58,7 +63,7 @@ class PlannerPolicy:
                 target_modules="all-linear",
             )
             self.model = get_peft_model(self.model, config)
-        else:
+        elif not adapter_is_disabled:
             self.model = PeftModel.from_pretrained(self.model, adapter_path)
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
@@ -229,10 +234,19 @@ class PlannerPolicy:
 
         shift_logits = logits[:, :-1, :]
         shift_labels = input_ids[:, 1:]
-        logprobs = F.log_softmax(shift_logits, dim=-1)
-        token_logprobs = logprobs.gather(-1, shift_labels.unsqueeze(-1)).squeeze(-1)
-        response_mask = response_mask.to(dtype=token_logprobs.dtype)
-        return (token_logprobs * response_mask).sum(dim=1)
+        response_positions = response_mask.to(dtype=torch.bool)
+        if not bool(response_positions.any()):
+            return torch.zeros(len(prompts), dtype=shift_logits.dtype, device=self.device)
+
+        selected_logits = shift_logits[response_positions]
+        selected_labels = shift_labels[response_positions]
+        selected_token_logprobs = -F.cross_entropy(selected_logits, selected_labels, reduction="none")
+
+        batch_indices = torch.arange(len(prompts), device=self.device).unsqueeze(1).expand_as(shift_labels)
+        selected_batch_indices = batch_indices[response_positions]
+        sequence_logprobs = torch.zeros(len(prompts), dtype=selected_token_logprobs.dtype, device=self.device)
+        sequence_logprobs.index_add_(0, selected_batch_indices, selected_token_logprobs)
+        return sequence_logprobs
 
     def _encode_prompt(self, prompt: str) -> dict[str, torch.Tensor]:
         inputs = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=True)

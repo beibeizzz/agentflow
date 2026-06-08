@@ -29,7 +29,7 @@ for worker in $(seq 0 $((WORKERS - 1))); do
   worker_log="logs/full/worker_${worker}.log"
   echo "Starting worker=$worker start=$start limit=$limit log=$worker_log" | tee -a logs/full/run.log
   "$PYTHON" run_gsm8k_agentflow.py \
-    --data-file data/gsm8k_test.json \
+    --data-file try_gsm8k_0522/data/gsm8k_test_eval_rest.json \
     --output-dir results/full \
     --solver-log-dir "logs/full/problems/worker_${worker}" \
     --output-types direct \

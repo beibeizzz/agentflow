@@ -1,8 +1,8 @@
-vllm serve models/Qwen/Qwen3-0.6B \
+vllm serve model/Qwen/Qwen3-0.6B \
   --host 0.0.0.0 \
   --port 8000 \
   --served-model-name Qwen3-0.6B \
   --tensor-parallel-size 1 \
   --gpu-memory-utilization 0.80 \
-  --max-model-len 4096 \
+  --max-model-len 8192 \
   --attention-backend FLASH_ATTN
