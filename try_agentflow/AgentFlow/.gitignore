@@ -3,13 +3,11 @@ task_logs/
 rollout_data/
 wandb/
 outputs/
-*.parquet
 tmp/
 *.ipynb
 checkpoints/
 triples/
 triples_texts/
-*.json
 *.log
 
 # Byte-compiled / optimized / DLL files

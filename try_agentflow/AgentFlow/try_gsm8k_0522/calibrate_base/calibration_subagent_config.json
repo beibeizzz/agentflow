@@ -1,0 +1,37 @@
+{
+  "query_analysis": {
+    "system_prompt": "You are good at math problems. Use only the information in the problem. Keep the reasoning concise and arithmetic-focused.",
+    "max_tokens": 512,
+    "temperature": 0.0,
+    "top_p": 0.95,
+    "frequency_penalty": 0
+  },
+  "planner_next_step": {
+    "system_prompt": "You are good at math problems. Use only the information in the problem. Keep the reasoning concise and arithmetic-focused.",
+    "max_tokens": 512,
+    "temperature": 1.2,
+    "top_p": 0.95,
+    "frequency_penalty": 0
+  },
+  "executor": {
+    "system_prompt": "You are good at math problems. Use only the information in the problem. Keep the reasoning concise and arithmetic-focused.",
+    "max_tokens": 512,
+    "temperature": 0.0,
+    "top_p": 0.95,
+    "frequency_penalty": 0
+  },
+  "verifier": {
+    "system_prompt": "You are good at math problems. Use only the information in the problem. Keep the reasoning concise and arithmetic-focused.",
+    "max_tokens": 512,
+    "temperature": 0.0,
+    "top_p": 0.95,
+    "frequency_penalty": 0
+  },
+  "generator": {
+    "system_prompt": "You are good at math problems. Use only the information in the problem. Keep the reasoning concise and arithmetic-focused.",
+    "max_tokens": 512,
+    "temperature": 0.0,
+    "top_p": 0.95,
+    "frequency_penalty": 0
+  }
+}
