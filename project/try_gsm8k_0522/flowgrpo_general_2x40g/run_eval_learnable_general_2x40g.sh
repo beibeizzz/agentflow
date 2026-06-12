@@ -15,7 +15,7 @@ ADAPTER_PATH="${ADAPTER_PATH:-try_gsm8k_0522/flowgrpo_general_2x40g/outputs/trai
 #ADAPTER_PATH="${ADAPTER_PATH:-false}"
 FROZEN_BASE_URL="${FROZEN_BASE_URL:-http://127.0.0.1:8000/v1}"
 FROZEN_MODEL="${FROZEN_MODEL:-Qwen3-0.6B}"
-EVAL_FILE="${EVAL_FILE:-try_gsm8k_0522/data/gsm8k_test.json}"
+EVAL_FILE="${EVAL_FILE:-try_gsm8k_0522/data/gsm8k_train_learnable.json}"
 EVAL_MODE="${EVAL_MODE:-adapter}"
 case "${ADAPTER_PATH,,}" in
   false|0|none|no|off|"")
