@@ -1,0 +1,15 @@
+input: ../data/gsm8k_train_learnable.json
+output_dir: outputs
+
+start: 0
+limit: null
+max_attempts: 3
+transport_attempts: 4
+concurrency: 2
+resume: true
+
+base_url: https://api.deepseek.com
+rewrite_model: deepseek-v4-flash
+judge_model: deepseek-v4-pro
+rewrite_temperature: 0.3
+
