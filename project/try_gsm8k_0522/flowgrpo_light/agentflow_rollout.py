@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import inspect
 import queue
 import threading
 import time
@@ -10,6 +11,14 @@ from typing import Any, Callable
 
 from .policy import GeneratedResponse
 from .rollout import PlannerSample, RolloutResult
+
+
+QuestionGetter = Callable[[dict[str, Any]], str]
+ResetSolver = Callable[..., None]
+ResultAdapter = Callable[
+    [Any, dict[str, Any], dict[str, Any], list[PlannerSample]],
+    RolloutResult,
+]
 
 
 def _vllm_engine_name(model_name: str) -> str:
@@ -277,22 +286,33 @@ class AgentFlowRolloutWorker:
         *,
         solver: Any,
         policy_engine: BatchedAgentFlowPlannerProxy,
-        reset_solver: Callable[[Any], None],
+        reset_solver: ResetSolver,
+        question_getter: QuestionGetter | None = None,
+        result_adapter: ResultAdapter | None = None,
     ) -> None:
         self.solver = solver
         self.policy_engine = policy_engine
         self.reset_solver = reset_solver
+        self.question_getter = question_getter or (lambda row: str(row["question"]))
+        self.result_adapter = result_adapter
         self.solver.planner.llm_engine = self.policy_engine
 
     def run(self, row: dict[str, Any]) -> RolloutResult:
         from flowgrpo.reward import compute_result_reward
 
-        question = str(row["question"])
+        question = str(self.question_getter(row))
         gold_answer = str(row.get("result") or row.get("gold_answer") or row.get("extra_info", {}).get("gold_answer"))
-        self.reset_solver(self.solver)
+        _call_reset_solver(self.reset_solver, self.solver, row)
         self.policy_engine.clear()
         try:
             result = self.solver.solve(question)
+            if self.result_adapter is not None:
+                return self.result_adapter(
+                    self.solver,
+                    row,
+                    result,
+                    list(self.policy_engine.samples),
+                )
             reward, predicted_answer = compute_result_reward(result, gold_answer)
             answer: Any = result.get("direct_output") or result.get("final_output") or result.get("base_response")
             return RolloutResult(
@@ -321,7 +341,9 @@ class AgentFlowBatchRolloutRunner:
         *,
         policy: Any,
         solver_factory: Callable[[], Any],
-        reset_solver: Callable[[Any], None],
+        reset_solver: ResetSolver,
+        question_getter: QuestionGetter | None = None,
+        result_adapter: ResultAdapter | None = None,
         rollout_concurrency: int = 1,
         planner_batch_size: int = 1,
         planner_batch_timeout_s: float = 0.01,
@@ -339,6 +361,8 @@ class AgentFlowBatchRolloutRunner:
                 solver=solver_factory(),
                 policy_engine=self.planner_engine.create_proxy(),
                 reset_solver=reset_solver,
+                question_getter=question_getter,
+                result_adapter=result_adapter,
             )
             for _ in range(self.rollout_concurrency)
         ]
@@ -374,6 +398,19 @@ class AgentFlowBatchRolloutRunner:
             return worker.run(row)
         finally:
             self._available_workers.put(worker)
+
+
+def _call_reset_solver(
+    reset_solver: ResetSolver,
+    solver: Any,
+    row: dict[str, Any],
+) -> None:
+    try:
+        inspect.signature(reset_solver).bind(solver, row)
+    except (TypeError, ValueError):
+        reset_solver(solver)
+    else:
+        reset_solver(solver, row)
 
 
 def _make_frozen_engine(
