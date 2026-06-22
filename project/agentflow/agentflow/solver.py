@@ -38,7 +38,7 @@ class Solver:
 
         self.output_types = output_types.lower().split(',')
         self.temperature  = temperature
-        assert all(output_type in ["base", "final", "direct"] for output_type in self.output_types), "Invalid output type. Supported types are 'base', 'final', 'direct'."
+        assert all(output_type in ["base", "final", "direct", "workflow"] for output_type in self.output_types), "Invalid output type. Supported types are 'base', 'final', 'direct', 'workflow'."
         self.verbose = verbose
 
     @staticmethod
@@ -121,7 +121,7 @@ class Solver:
             return json_data
     
         # Continue with query analysis and tool execution if final or direct responses are needed
-        if {'final', 'direct'} & set(self.output_types):
+        if {'final', 'direct', 'workflow'} & set(self.output_types):
             if self.verbose:
                 print(f"\n==> 🐙 Reasoning Steps from AgentFlow (Deep Thinking...)")
 
@@ -305,6 +305,8 @@ def construct_solver(llm_engine_name : str = "gpt-4o",
                      query_analysis_think_mode: str = None,
                      final_output_think_mode: str = None,
                      verifier_think_mode: str = None,
+                     planner_action_mode: str = "legacy",
+                     executor_mode: str = "legacy",
                      ):
 
     # Parse model_engine configuration
@@ -336,6 +338,7 @@ def construct_solver(llm_engine_name : str = "gpt-4o",
         think_mode=think_mode,
         query_analysis_think_mode=query_analysis_think_mode or think_mode,
         final_output_think_mode=final_output_think_mode or think_mode,
+        action_mode=planner_action_mode,
     )
 
     # Instantiate Verifier
@@ -362,7 +365,8 @@ def construct_solver(llm_engine_name : str = "gpt-4o",
         base_url=base_url if executor_engine == llm_engine_name else None,  # Only use base_url for trainable model
         temperature=temperature,
         think_mode=think_mode,
-        tool_instances_cache=initializer.tool_instances_cache  # Pass the cached tool instances
+        tool_instances_cache=initializer.tool_instances_cache,  # Pass the cached tool instances
+        execution_mode=executor_mode,
     )
 
     # Instantiate Solver

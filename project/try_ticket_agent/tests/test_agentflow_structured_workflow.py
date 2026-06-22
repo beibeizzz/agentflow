@@ -8,6 +8,7 @@ from agentflow.models.formatters import StructuredToolAction
 from agentflow.models.executor import Executor
 from agentflow.models.memory import Memory
 from agentflow.models.planner import Planner
+from agentflow.solver import Solver, construct_solver
 
 
 class RecordingEngine:
@@ -32,6 +33,53 @@ class RecordingTool:
 class FailIfCalled:
     def __call__(self, *args: object, **kwargs: object) -> object:
         raise AssertionError("structured Executor must not call an LLM")
+
+
+class ScriptedPlanner:
+    available_tools = ["Ticket_Finish_Tool"]
+    toolbox_metadata = {"Ticket_Finish_Tool": {}}
+
+    def __init__(self) -> None:
+        self.final_calls = 0
+
+    def analyze_query(self, question: str, image: object, json_data: object = None) -> str:
+        return "analysis"
+
+    def generate_next_step(self, *args: object, **kwargs: object) -> str:
+        return '{"tool_name":"Ticket_Finish_Tool","arguments":{"ticket_id":"T-1","outcome":"completed"}}'
+
+    def extract_context_subgoal_and_tool(self, response: object) -> tuple[str, str, str]:
+        return '{"ticket_id":"T-1","outcome":"completed"}', "finish", "Ticket_Finish_Tool"
+
+    def generate_final_output(self, *args: object, **kwargs: object) -> str:
+        self.final_calls += 1
+        return "unexpected"
+
+    def generate_direct_output(self, *args: object, **kwargs: object) -> str:
+        self.final_calls += 1
+        return "unexpected"
+
+
+class RecordingExecutor:
+    def set_query_cache_dir(self, root: str) -> None:
+        self.root = root
+
+    def generate_tool_command(self, *args: object, **kwargs: object) -> dict[str, str]:
+        return {"command": "{}"}
+
+    def extract_explanation_and_command(self, response: object) -> tuple[str, str, str]:
+        return "analysis", "explanation", "{}"
+
+    def execute_tool_command(self, tool_name: str, command: str) -> dict[str, bool]:
+        return {"ok": True}
+
+
+class StopVerifier:
+    def verificate_context(self, *args: object, **kwargs: object) -> str:
+        return "stop"
+
+    def extract_conclusion(self, response: object) -> tuple[str, str]:
+        return "verified", "STOP"
 
 
 def make_planner(*, action_mode: str) -> Planner:
@@ -146,6 +194,30 @@ class StructuredExecutorTests(unittest.TestCase):
     def test_executor_constructor_defaults_to_legacy_mode(self) -> None:
         signature = inspect.signature(Executor.__init__)
         self.assertEqual(signature.parameters["execution_mode"].default, "legacy")
+
+
+class WorkflowSolverTests(unittest.TestCase):
+    def test_workflow_runs_actions_without_final_generators(self) -> None:
+        planner = ScriptedPlanner()
+        solver = Solver(
+            planner,
+            StopVerifier(),
+            Memory(),
+            RecordingExecutor(),
+            output_types="workflow",
+            max_steps=1,
+            verbose=False,
+        )
+        result = solver.solve("update ticket")
+        self.assertEqual(result["step_count"], 1)
+        self.assertNotIn("direct_output", result)
+        self.assertNotIn("final_output", result)
+        self.assertEqual(planner.final_calls, 0)
+
+    def test_construct_solver_defaults_to_legacy_modes(self) -> None:
+        signature = inspect.signature(construct_solver)
+        self.assertEqual(signature.parameters["planner_action_mode"].default, "legacy")
+        self.assertEqual(signature.parameters["executor_mode"].default, "legacy")
 
 
 if __name__ == "__main__":
