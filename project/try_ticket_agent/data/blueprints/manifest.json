@@ -1,0 +1,35 @@
+{
+  "collection_validation": {
+    "duplicate_episode_ids": [],
+    "duplicate_request_goal_signatures": [],
+    "duplicate_state_hashes": [],
+    "ok": true
+  },
+  "counts": {
+    "smoke": 32,
+    "test": 512,
+    "train": 2500,
+    "validation": 256
+  },
+  "generator_version": "1.0.0",
+  "reference_validation": {
+    "curriculum_counts": {
+      "direct": 2641,
+      "indirect": 659
+    },
+    "failures": [],
+    "lookup_counts": {
+      "customer_id": 330,
+      "order_id": 329,
+      "ticket_id": 2641
+    },
+    "ok": true
+  },
+  "seed": 42,
+  "sha256": {
+    "smoke": "b3eba7e1adbd6580b847f58a17106054a27a668b131150b73d419a1046c71f51",
+    "test": "f568fe9b303c458524b5bf6329896776b1d25f9fc6069372a70fdf12d697bc06",
+    "train": "b1dd1426ba25195ae17188333c221a5e26c8d839e9926743438c609d49f3081a",
+    "validation": "3128dc7ee278674160905d863e07d7b0ce757db132c752e2974d23f2136c9447"
+  }
+}
