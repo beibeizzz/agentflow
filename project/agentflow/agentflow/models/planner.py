@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple
 from PIL import Image
 
 from agentflow.engine.factory import create_llm_engine
-from agentflow.models.formatters import NextStep, QueryAnalysis
+from agentflow.models.formatters import NextStep, QueryAnalysis, StructuredToolAction
 from agentflow.models.memory import Memory
 
 
@@ -24,13 +24,17 @@ class Planner:
                  check_model: bool = True, temperature : float = .0,
                  think_mode: str = "default",
                  query_analysis_think_mode: str = None,
-                 final_output_think_mode: str = None):
+                 final_output_think_mode: str = None,
+                 action_mode: str = "legacy"):
+        if action_mode not in {"legacy", "structured"}:
+            raise ValueError(f"Unsupported Planner action_mode: {action_mode}")
         self.llm_engine_name = llm_engine_name
         self.llm_engine_fixed_name = llm_engine_fixed_name
         self.is_multimodal = is_multimodal
         self.think_mode = think_mode
         self.query_analysis_think_mode = query_analysis_think_mode or think_mode
         self.final_output_think_mode = final_output_think_mode or think_mode
+        self.action_mode = action_mode
         # self.llm_engine_mm = create_llm_engine(model_string=llm_engine_name, is_multimodal=False, base_url=base_url, temperature = temperature)
         self.llm_engine_fixed = create_llm_engine(model_string=llm_engine_fixed_name, is_multimodal=False, temperature = temperature, think_mode=think_mode)
         self.llm_engine = create_llm_engine(model_string=llm_engine_name, is_multimodal=False, base_url=base_url, temperature = temperature, think_mode=think_mode)
@@ -222,6 +226,9 @@ Problem:
         return str(self.query_analysis).strip()
 
     def extract_context_subgoal_and_tool(self, response: Any) -> Tuple[str, str, str]:
+        if getattr(self, "action_mode", "legacy") == "structured":
+            return self._extract_structured_action(response)
+
         calculator_only = self.available_tools == ["Calculator_Tool"]
         calculator_sub_goal = "Calculate the next arithmetic expression"
         calculator_tool_name = "Calculator_Tool"
@@ -301,10 +308,56 @@ Problem:
             return None, None, None
 
 
+    def _extract_structured_action(self, response: Any) -> Tuple[str, str, str]:
+        try:
+            if isinstance(response, StructuredToolAction):
+                action = response
+            elif isinstance(response, str):
+                payload = json.loads(response.strip())
+                if not isinstance(payload, dict) or set(payload) != {"tool_name", "arguments"}:
+                    return None, None, None
+                if hasattr(StructuredToolAction, "model_validate"):
+                    action = StructuredToolAction.model_validate(payload)
+                else:
+                    action = StructuredToolAction.parse_obj(payload)
+            else:
+                return None, None, None
+            if action.tool_name not in self.available_tools or not isinstance(action.arguments, dict):
+                return None, None, None
+            context = json.dumps(
+                action.arguments,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            return context, f"Execute {action.tool_name}", action.tool_name
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None, None, None
+
+
 
     def generate_next_step(self, question: str, image: str, query_analysis: str, memory: Memory, step_count: int, max_step_count: int, json_data: Any = None) -> Any:
         calculator_only = self.available_tools == ["Calculator_Tool"]
-        if self.is_multimodal:
+        if getattr(self, "action_mode", "legacy") == "structured":
+            prompt_generate_next_step = f"""
+{self._think_directive()}Select exactly one available tool for the next workflow step.
+
+User request: {question}
+Query analysis: {query_analysis}
+Available tools: {self.available_tools}
+Tool metadata: {self.toolbox_metadata}
+Previous steps: {memory.get_actions()}
+Current step: {step_count} of {max_step_count}
+
+Return exactly one JSON object with exactly these top-level fields:
+{{
+  "tool_name": "<exact available tool name>",
+  "arguments": {{"<argument name>": "<argument value>"}}
+}}
+
+Do not return markdown, prose, arrays, multiple objects, or unknown fields.
+"""
+        elif self.is_multimodal:
             prompt_generate_next_step = f"""
 Task: Determine the optimal next step to address the given query based on the provided analysis, available tools, and previous steps taken.
 
@@ -433,8 +486,13 @@ Rules:
 - The response must end with the Context, Sub-Goal, and Tool Name sections in that order, with no extra content.
                     """
             
-        generation_kwargs = {"response_format": NextStep}
-        if calculator_only:
+        response_format = (
+            StructuredToolAction
+            if getattr(self, "action_mode", "legacy") == "structured"
+            else NextStep
+        )
+        generation_kwargs = {"response_format": response_format}
+        if calculator_only and getattr(self, "action_mode", "legacy") == "legacy":
             generation_kwargs.update(self._generation_config("planner_next_step"))
         next_step = self.llm_engine(prompt_generate_next_step, **generation_kwargs)
         if json_data is not None:

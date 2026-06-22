@@ -1,4 +1,6 @@
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict
 
 # Planner: QueryAnalysis
 class QueryAnalysis(BaseModel):
@@ -30,6 +32,12 @@ class NextStep(BaseModel):
     Calculation: str = ""
     Sub_goal: str = ""
     tool_name: str = ""
+
+
+class StructuredToolAction(BaseModel):
+    tool_name: str
+    arguments: dict[str, Any]
+    model_config = ConfigDict(extra="forbid")
 
 # Executor: MemoryVerification
 class MemoryVerification(BaseModel):
