@@ -5,6 +5,7 @@ import json
 import unittest
 
 from agentflow.models.formatters import StructuredToolAction
+from agentflow.models.executor import Executor
 from agentflow.models.memory import Memory
 from agentflow.models.planner import Planner
 
@@ -17,6 +18,20 @@ class RecordingEngine:
     def __call__(self, prompt: object, **kwargs: object) -> object:
         self.calls.append((prompt, kwargs))
         return self.response
+
+
+class RecordingTool:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def execute(self, **kwargs: object) -> dict[str, bool]:
+        self.calls.append(dict(kwargs))
+        return {"ok": True}
+
+
+class FailIfCalled:
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        raise AssertionError("structured Executor must not call an LLM")
 
 
 def make_planner(*, action_mode: str) -> Planner:
@@ -86,6 +101,51 @@ class StructuredPlannerTests(unittest.TestCase):
     def test_planner_constructor_defaults_to_legacy_mode(self) -> None:
         signature = inspect.signature(Planner.__init__)
         self.assertEqual(signature.parameters["action_mode"].default, "legacy")
+
+
+class StructuredExecutorTests(unittest.TestCase):
+    def make_executor(self) -> tuple[Executor, RecordingTool]:
+        tool = RecordingTool()
+        executor = Executor.__new__(Executor)
+        executor.execution_mode = "structured"
+        executor.tool_instances_cache = {"Ticket_Update_Tool": tool}
+        executor.llm_generate_tool_command = FailIfCalled()
+        return executor, tool
+
+    def test_structured_executor_calls_cached_tool_directly(self) -> None:
+        executor, tool = self.make_executor()
+        result = executor.execute_tool_command(
+            "Ticket_Update_Tool",
+            '{"field":"priority","ticket_id":"T-1","value":"urgent"}',
+        )
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(
+            tool.calls,
+            [{"field": "priority", "ticket_id": "T-1", "value": "urgent"}],
+        )
+
+    def test_structured_generate_command_does_not_call_llm(self) -> None:
+        executor, _ = self.make_executor()
+        command = executor.generate_tool_command(
+            "request",
+            None,
+            '{"ticket_id":"T-1","outcome":"completed"}',
+            "finish",
+            "Ticket_Finish_Tool",
+            {},
+            1,
+        )
+        self.assertEqual(command.command, '{"ticket_id":"T-1","outcome":"completed"}')
+
+    def test_structured_executor_rejects_invalid_arguments_without_tool_call(self) -> None:
+        executor, tool = self.make_executor()
+        result = executor.execute_tool_command("Ticket_Update_Tool", "[]")
+        self.assertEqual(result["code"], "INVALID_TOOL_ARGUMENTS")
+        self.assertEqual(tool.calls, [])
+
+    def test_executor_constructor_defaults_to_legacy_mode(self) -> None:
+        signature = inspect.signature(Executor.__init__)
+        self.assertEqual(signature.parameters["execution_mode"].default, "legacy")
 
 
 if __name__ == "__main__":
