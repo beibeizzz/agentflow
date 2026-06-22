@@ -1,203 +1,208 @@
-# Ticket Agent Turn-Level GSPO Design
+# Ticket AgentFlow and Turn-Level GSPO Design
 
 ## Objective
 
-Add a deterministic, concurrent ticket-processing sandbox suitable for training a Qwen3-0.6B planner without SFT. The task reuses the repository's completed turn-level GSPO implementation and mirrors the remote experiment layout and configuration style of `project/try_gsm8k_0522/flowgrpo_general_2x40g`.
+Add a synthetic ticket-processing task that first runs as a standard AgentFlow baseline and then trains only `Planner.generate_next_step` with the repository's existing turn-level GSPO implementation. The task targets Qwen3-0.6B, uses no SFT, has no real business dependencies, and mirrors `project/try_gsm8k_0522` in experiment layout and execution order.
 
-The first version deliberately limits task complexity so binary reward remains usable with a 0.6B model. It evaluates whether the planner can complete a two- or three-turn workflow with structured tool calls while preserving exact token identity during GSPO updates.
+The first version limits the workflow to three tools and two or three planner turns so binary reward remains viable for a 0.6B model.
+
+## Experiment Sequence
+
+1. **Ticket AgentFlow baseline:** base Qwen3-0.6B performs query analysis and planner next-step generation through the core AgentFlow Solver. Tools and verification are deterministic.
+2. **Ticket AgentFlow + GSPO:** the query analyzer is frozen Qwen3-0.6B and planner next-step generation is replaced by a trainable Qwen3-0.6B LoRA policy. The same Solver, Memory, tools, backend, verifier, data, and step limit are used.
+3. **Evaluation:** baseline and LoRA adapter run at planner temperature zero on identical held-out episodes.
+
+There is no SFT stage, SFT dataset, or oracle planner target.
 
 ## Scope
 
-The first version includes:
+The first version includes core AgentFlow integration, a general structured-action Planner/Executor mode, three registered Ticket BaseTools, worker-local state, deterministic hidden verification, binary reward, LLM-assisted request synthesis, concurrent rollouts, exact sampled token IDs, and current turn-level GSPO.
 
-- a frozen Query Analyzer;
-- a trainable Qwen3-0.6B LoRA planner;
-- three deterministic tools: `Ticket_Query`, `Ticket_Update`, and `Ticket_Finish`;
-- worker-local sandbox state;
-- a deterministic hidden verifier and binary terminal reward;
-- two- or three-turn planner trajectories;
-- concurrent rollout collection;
-- turn-level GSPO using exact sampled prompt and response token IDs;
-- deterministic dataset generation and validation;
-- local unit and integration tests plus remote real-model smoke tests.
+It excludes notes, ambiguous matching, clarification, no-op/adversarial tasks, multiple updates, an LLM training/evaluation judge, trainable non-Planner components, trajectory-level ratios, and model-generated code execution in the Ticket path.
 
-The first version excludes:
+The data-synthesis judge is an offline dataset filter only. It is not a reward model and is not called during baseline, training, or evaluation.
 
-- SFT data construction or SFT training;
-- notes or free-text mutation;
-- ambiguous matching and clarification tasks;
-- no-op and adversarial tasks;
-- multi-ticket or multi-field updates;
-- LLM-as-a-judge;
-- trainable analyzers, executors, verifiers, or final generators;
-- trajectory-level importance ratios or trajectory-level clipping;
-- execution of model-generated code.
+## Core AgentFlow Extension
 
-## Isolation and Repository Layout
+The Ticket task follows `try_gsm8k_0522`: construct a core Solver, register standard tools, and replace `solver.planner.llm_engine` with the trainable policy only during GSPO rollout.
 
-All task-specific implementation lives under a new sibling directory:
+### Structured Planner Action
 
-```text
-project/try_ticket_agent/
-├── README.md
-├── flowgrpo_general_2x40g/
-│   ├── config_train_general_2x40g.yaml
-│   ├── config_eval_learnable_general_2x40g.yaml
-│   ├── run_train_general_2x40g.sh
-│   ├── run_eval_learnable_general_2x40g.sh
-│   └── outputs/
-├── ticket_env/
-├── agent/
-├── data/
-├── scripts/
-└── tests/
+Add `StructuredToolAction` to `agentflow.models.formatters`:
+
+```json
+{
+  "tool_name": "Ticket_Update_Tool",
+  "arguments": {
+    "ticket_id": "T-1042",
+    "field": "status",
+    "value": "resolved"
+  }
+}
 ```
 
-Ticket tools are task-local and are not added to `project/agentflow/agentflow/tools`. They therefore do not enter the existing global tool discovery and caching path. Existing files and entry points under `project/try_gsm8k_0522` are not moved, renamed, or structurally reorganized.
+`Planner` gains explicit `action_mode="structured"`. It prompts for one exact action object using available tool metadata. Extraction accepts a `StructuredToolAction` or strict JSON object and returns the tool name plus canonical JSON arguments for the Solver loop. Existing Planner and Calculator behavior remain the default.
 
-The ticket training entry point imports the existing turn-level GSPO primitives from `try_gsm8k_0522/flowgrpo_light`. Shared code may receive only minimal backward-compatible changes required to accept the task-specific rollout provider. Such changes must retain GSM8K behavior and pass its existing tests.
+### Deterministic Structured Executor
+
+`Executor` gains explicit `execution_mode="structured"`. In this mode it does not call an LLM, treats canonical argument JSON as the internal command, finds the cached tool instance, and calls `tool.execute(**arguments)`. Generated Python, `exec`, and `eval` are never used. The existing Executor mode remains the default.
+
+### Workflow Output
+
+`Solver` gains `output_types="workflow"`. This runs query analysis, planner actions, tools, Memory, and Verifier but skips LLM final/direct generation. `construct_solver` passes the new Planner and Executor modes. Existing `base`, `final`, and `direct` behavior remains unchanged.
+
+## Ticket Tools and Backend
+
+Add standard AgentFlow tools under:
+
+```text
+project/agentflow/agentflow/tools/ticket_common/
+project/agentflow/agentflow/tools/ticket_query/
+project/agentflow/agentflow/tools/ticket_update/
+project/agentflow/agentflow/tools/ticket_finish/
+```
+
+The tool names are `Ticket_Query_Tool`, `Ticket_Update_Tool`, and `Ticket_Finish_Tool`. Each inherits `BaseTool` and is discovered by the existing `Initializer`.
+
+The three instances accept a bindable `TicketBackend`. Before binding, calls return `BACKEND_NOT_BOUND`. A Ticket solver factory constructs a normal Solver, creates one backend, and binds that backend to all three cached instances.
+
+Each rollout worker owns a distinct Solver, Memory, backend, and tool set. Each episode resets the backend from a deep copy and binds its hidden goal only to deterministic verification. No mutable module-level state is allowed.
+
+`Ticket_Query_Tool` accepts exactly `lookup_by,value`; lookup is `ticket_id`, `customer_id`, or `order_id`. `Ticket_Update_Tool` accepts exactly `ticket_id,field,value` and atomically updates one of `status`, `assigned_team`, or `priority`. `Ticket_Finish_Tool` accepts exactly `ticket_id,outcome` and records a submission without mutating ticket fields. Expected errors are JSON-serializable results.
 
 ## Runtime Architecture
 
+### Baseline
+
 ```text
 User request
-  -> frozen Query Analyzer
-  -> trainable Qwen3-0.6B Planner
-  -> exact JSON action
-  -> task-local deterministic dispatcher
-  -> Ticket_Query / Ticket_Update / Ticket_Finish
-  -> trajectory-local SandboxState
-  -> deterministic hidden verifier
+  -> Core Planner.analyze_query (base Qwen3-0.6B)
+  -> Core Planner.generate_next_step (base Qwen3-0.6B)
+  -> Core Executor(structured)
+  -> Registered Ticket BaseTools
+  -> Worker-local TicketBackend
+  -> Core Memory
+  -> Deterministic TicketVerifier
+  -> Core Solver(workflow)
+```
+
+### GSPO
+
+```text
+User request
+  -> Core Planner.analyze_query (frozen Qwen3-0.6B)
+  -> Core Planner.generate_next_step (trainable LoRA policy)
+  -> the same Executor, tools, backend, Memory, verifier, and Solver
   -> binary terminal reward
   -> existing turn-level GSPO update
 ```
 
-The Query Analyzer receives the user request and returns a short structured summary. It is frozen, its tokens are not trained, and its output does not expose hidden state or goals. The planner is the only trainable component.
+The deterministic TicketVerifier implements the core Verifier interface. It stops after a finish submission and supplies structured feedback after other steps. A wrong finish terminates but receives reward zero.
 
-There is no LLM final-response generator. After `Ticket_Finish`, deterministic code produces the response and terminates the trajectory.
+## Ticket State and Curriculum
 
-## Ticket State
+Each episode contains six to ten synthetic tickets with `ticket_id`, `customer_id`, `order_id`, immutable `subject`, and mutable `status`, `assigned_team`, and `priority`.
 
-The sandbox uses strict dataclasses or Pydantic schemas. Each ticket contains only the fields needed by the first version:
+Every episode requires one legal field update on one ticket and a correct finish within three planner turns:
 
-- `ticket_id`;
-- `customer_id`;
-- `order_id`;
-- `status`;
-- `assigned_team`;
-- `priority`;
-- a short immutable subject used only as context.
+- 80% direct-ID tasks include the target `ticket_id`; optimal path is Update then Finish.
+- 20% indirect tasks include a unique `customer_id` or `order_id` but not the target ticket ID; optimal path is Query, Update, then Finish.
 
-Allowed mutable fields are `status`, `assigned_team`, and `priority`. State transition rules and enum validation are centralized in the environment rather than duplicated in tools.
+Names, fuzzy matching, multiple candidates, notes, no-op behavior, adversarial content, and multiple updates are deferred.
 
-Each trajectory receives a deep copy of the initial state, action log, step counter, and finish submission. No mutable backend, action log, or ticket object is shared across rollout workers.
+## LLM-Assisted Data Synthesis
 
-## Tool Contract
-
-The planner emits exactly one JSON object per turn. Markdown wrappers, prose, arrays, nested tool calls, unknown top-level fields, and executable code are rejected.
-
-### Ticket_Query
-
-```json
-{"tool":"Ticket_Query","arguments":{"lookup_by":"ticket_id","value":"T-1042"}}
-```
-
-`lookup_by` is one of `ticket_id`, `customer_id`, or `order_id`. Exactly one lookup is performed. First-version data guarantees a unique result. The tool returns a compact complete ticket record or a structured error.
-
-### Ticket_Update
-
-```json
-{"tool":"Ticket_Update","arguments":{"ticket_id":"T-1042","field":"status","value":"resolved"}}
-```
-
-The tool changes exactly one allowed field. It validates ticket existence, enum membership, legal status transitions, and closed-ticket restrictions before applying an atomic update.
-
-### Ticket_Finish
-
-```json
-{"tool":"Ticket_Finish","arguments":{"ticket_id":"T-1042","outcome":"completed"}}
-```
-
-The tool records the submission without mutating ticket fields and terminates the episode. The hidden verifier decides whether the submission and final state are correct.
-
-All expected tool and validation failures return JSON-serializable structured errors. They do not escape as unhandled rollout exceptions.
-
-## Episodes and Curriculum
-
-An episode contains approximately six to ten synthetic tickets and one required mutation on one ticket. It has a maximum of three planner turns.
-
-The initial training distribution is:
-
-- 80% direct-ID tasks: the request contains a unique `ticket_id`; the optimal path is normally `Ticket_Update -> Ticket_Finish`;
-- 20% indirect exact-lookup tasks: the request contains a unique `customer_id` or `order_id`; the optimal path is `Ticket_Query -> Ticket_Update -> Ticket_Finish`.
-
-Every request requires only one update to one of `status`, `assigned_team`, or `priority`. Names, fuzzy search, multiple candidates, multiple updates, notes, no-op behavior, and adversarial text are deferred.
-
-The generator is deterministic for a generator version, seed, split, and episode index. It constructs and executes a deterministic reference action sequence to reject invalid generated episodes. Reference actions are used only for dataset validation; no SFT dataset or training target is produced and reference actions are never included in planner prompts or memory.
-
-Training, validation, and test splits must not share episode IDs, initial-state hashes, or normalized request-and-goal signatures.
-
-The indirect-lookup fraction may be raised in a later experiment only after measured validation performance justifies it. This is a dataset/configuration change, not an objective-function change.
-
-## Hidden Verification and Reward
-
-The hidden goal specifies the target ticket, required final field value, required finish submission, and a prohibition on all other mutations. It is available only to deterministic validation and reward code.
-
-Success requires all of the following:
-
-- the required target field has the exact expected value;
-- `Ticket_Finish` names the correct ticket and outcome;
-- no non-target field changed;
-- no other ticket changed;
-- the trajectory terminated within three planner turns.
-
-Training and evaluation both use binary terminal reward:
+Data synthesis follows the engineering pattern in `try_gsm8k_0522/rewrite_calculator_prompts` with task-specific modules:
 
 ```text
-reward = 1.0 if hidden_verifier.success else 0.0
+deterministic episode blueprint
+  -> canonical request
+  -> rewrite API
+  -> deterministic validator
+  -> judge API
+  -> reference execution through AgentFlow Ticket tools
+  -> hidden verifier
+  -> accepted dataset and manifest
 ```
 
-There is no shaped reward. Reports must include exact episode success and the fraction of rollout groups with zero reward variance so reward sparsity is visible.
+The blueprint owns all state, identifiers, legal transition, target field/value, lookup mode, and finish outcome. The rewrite model returns only `user_request` and cannot define the goal.
+
+The deterministic validator rejects missing required values, introduced identifiers or values, indirect target-ticket leakage, tool/JSON/goal/trace hints, second mutations, excessive length, invalid characters, and non-unique targets. The judge checks semantic equivalence. Each candidate has at most three semantic attempts with feedback; transport retry is separate.
+
+The pipeline supports fake SDK injection, bounded concurrency, resume, progress/rejected JSONL, token usage, and atomic final writes. Configuration follows:
+
+```yaml
+base_url: https://api.deepseek.com
+rewrite_model: deepseek-v4-flash
+judge_model: deepseek-v4-pro
+rewrite_temperature: 0.3
+max_attempts: 3
+transport_attempts: 4
+concurrency: 2
+resume: true
+```
+
+API output is not assumed byte-reproducible across time. Blueprints, accepted requests, API metadata, progress records, and final hashes are frozen before experiments. Training never synthesizes online.
+
+Splits and identifiers are assigned before API calls and cannot share episode IDs, initial-state hashes, or normalized request-goal signatures. Reference actions execute through actual registered Ticket tools and the hidden verifier but are never stored as Planner targets or exposed to the model.
+
+## Hidden Verification and Binary Reward
+
+Success requires the exact target value, correct ticket and finish outcome, no collateral mutation, no invalid Planner response, no tool error, and completion within three turns.
+
+```text
+reward = 1.0 if verification.success else 0.0
+```
+
+There is no shaped reward. Recovery after an invalid Planner action still receives zero so positive trajectory advantage cannot be broadcast to a known-invalid turn.
+
+Unavailable model services, generation exceptions, missing token IDs, and internal backend failures are infrastructure errors marked `valid_for_training=False` and excluded before normalization.
+
+## Shared AgentFlow GSPO Rollout
+
+`flowgrpo_light/agentflow_rollout.py` gains an optional task rollout adapter and episode-reset callback. Without callbacks, current GSM8K behavior is unchanged. Ticket callbacks reset backend/Memory, run the core Solver, and convert verification to the shared rollout result.
+
+The same `BatchedAgentFlowPlannerEngine` replaces `solver.planner.llm_engine`. Query analysis remains frozen. No further change is expected in `policy.py`, `rollout.py`, or `grpo_objective.py` beyond the completed exact-token and turn-level work.
 
 ## Turn-Level GSPO Semantics
 
-For each episode, the rollout runner samples `group_size` complete trajectories. Reward normalization occurs exactly once over that episode's trajectory group:
+For each episode, sample `group_size` trajectories and compute reward mean/std once across valid trajectories in that episode group:
 
 ```text
 advantage_i = (reward_i - group_mean) / (group_std + epsilon)
 ```
 
-Each trajectory receives one advantage. That advantage is broadcast to every trainable planner turn in the trajectory. Turns are not inserted back into reward mean/std computation and a multi-turn trajectory is not treated as several rollouts.
+Broadcast trajectory advantage to its Planner turns. Turns do not re-enter reward normalization and a multi-turn trajectory is not multiple rollouts.
 
-Every planner turn remains an independent GSPO sequence. The implementation uses the exact prompt and response token IDs captured during sampling and computes:
+Each Planner turn remains one independent sequence using exact sampled IDs:
 
 ```text
 ratio_turn = exp(mean_response_logp_new - mean_response_logp_old)
 clipped_ratio_turn = clamp(ratio_turn, 1 - 0.001, 1 + 0.003)
 ```
 
-Ratio and clipping arithmetic remains FP32. The loss does not concatenate a trajectory's turns, compute one trajectory mean log-prob, or apply one trajectory clip. Query Analyzer, observations, tool outputs, verifier output, and deterministic final-response tokens are not response tokens in the policy loss.
+Ratio arithmetic remains FP32. A three-turn trajectory contributes three turn losses and a two-turn trajectory contributes two. Analyzer, tool, verifier, and deterministic output tokens are excluded.
 
-The existing turn-flattened optimization behavior is retained: after trajectory-group normalization and advantage broadcast, each valid planner turn contributes a training sequence. Consequently, a three-turn trajectory contributes three turn losses and a two-turn trajectory contributes two. This is intentional for compatibility with the completed turn-level GSPO implementation.
+## Repository Changes
 
-## Invalid Actions and Infrastructure Failures
+Core modifications are limited to:
 
-Invalid JSON, unknown tools, invalid arguments, and illegal transitions are model behavior. Their sampled planner token IDs are retained. A structured error observation is returned if a step remains, allowing correction; the final trajectory receives binary reward according to the hidden verifier, normally zero.
+```text
+project/agentflow/agentflow/models/formatters.py
+project/agentflow/agentflow/models/planner.py
+project/agentflow/agentflow/models/executor.py
+project/agentflow/agentflow/solver.py
+project/agentflow/agentflow/tools/ticket_common/
+project/agentflow/agentflow/tools/ticket_query/
+project/agentflow/agentflow/tools/ticket_update/
+project/agentflow/agentflow/tools/ticket_finish/
+```
 
-The following are infrastructure failures rather than model failures:
-
-- frozen Analyzer service unavailable;
-- planner sampling service failure;
-- missing or inconsistent sampled token IDs;
-- unrecoverable internal sandbox or dispatcher failure.
-
-Such trajectories are marked `valid_for_training=False` and excluded from the optimizer batch. They must be counted and reported separately rather than converted into reward-zero samples.
+Shared GSPO integration modifies only `flowgrpo_light/agentflow_rollout.py` and its regression tests. All experiment-specific code is under `project/try_ticket_agent`. Existing GSM8K scripts, configs, defaults, and layout are not renamed or reorganized.
 
 ## Remote Two-40G Configuration
 
-The new experiment directory mirrors the naming, YAML fields, environment-variable overrides, and launch style of `try_gsm8k_0522/flowgrpo_general_2x40g`. The intended deployment keeps the frozen Qwen service on one GPU and the trainable LoRA policy on the other, matching the existing remote workflow.
-
-Initial training defaults are:
+The experiment mirrors `flowgrpo_general_2x40g` names, YAML keys, overrides, and launch style. Initial GSPO defaults are:
 
 ```yaml
 model_path: /home/north/vllm_test/models/Qwen/Qwen3-0.6B
@@ -226,57 +231,30 @@ query_analysis_think_mode: on
 reward_mode: binary
 ```
 
-The YAML and shell-script defaults must agree. Environment variables may override them explicitly. This avoids the current GSM8K script's ambiguous differences between YAML values and shell defaults while preserving the same operational interface.
+Baseline uses the base Qwen vLLM endpoint. During GSPO, frozen Qwen uses GPU 0 and the trainable policy uses GPU 1. YAML and shell defaults must agree; environment variables are explicit overrides.
 
-No claim is made that these throughput and sampling values are optimal for ticket prompts. The remote smoke test validates memory use and throughput before a full run.
+## TDD and Acceptance
 
-## Tests and Acceptance Criteria
+Implementation order is:
 
-Implementation follows TDD. Required tests cover:
+1. structured formatter, Planner, Executor, and workflow Solver;
+2. registered Ticket tools and backend binding;
+3. Ticket solver factory, verifier, and AgentFlow baseline;
+4. deterministic blueprints and reference execution;
+5. fake-client-tested rewrite/judge pipeline;
+6. shared rollout adapter and worker isolation;
+7. turn-level GSPO integration;
+8. baseline/adapter evaluation and remote configs;
+9. regression and remote smoke.
 
-1. Tool behavior: valid calls, missing fields, unknown values, illegal transitions, closed tickets, atomic update, and JSON-serializable results.
-2. Sandbox behavior: deep-copy reset, immutable initial-state snapshot, state diff, action log, step count, and finish reset.
-3. Parser and dispatcher safety: rejection of prose-wrapped JSON, multiple objects, unknown fields, arrays, Python, markdown mixtures, nested calls, and any `exec`, `eval`, `subprocess`, or `os.system` execution path.
-4. Generator and splits: deterministic seeds, 80/20 lookup distribution, unique lookup result, all reference actions verified, and no cross-split duplication.
-5. Hidden verifier: exact success, missing update, wrong ticket, extra mutation, wrong finish, missing finish, and step-limit failure.
-6. Rollout: two- and three-turn success, correction after structured errors when a turn remains, truncation, terminal finish, and exact sampled token-ID preservation.
-7. GSPO semantics: normalization by episode trajectory group exactly once, trajectory advantage broadcast to turns, independent per-turn ratios, FP32 ratio math, and asymmetric clipping at 0.001/0.003.
-8. Concurrency: at least 16 simultaneous trajectories with deliberately repeated ticket IDs and no cross-worker state contamination.
-9. Local GSPO unit smoke: synthetic token/log-prob inputs produce finite loss and expected parameter gradients without a real model service.
-10. Remote real-model smoke: `question_batch_size=2`, `group_size=2`, one optimizer update, LoRA parameter change, finite metrics, adapter save, and adapter reload.
-11. Regression: existing `try_gsm8k_0522` tests pass and all existing script paths remain valid.
-
-Local development uses the `all-in-rag` Conda environment where applicable and may ignore the two previously identified missing optional modules. GPU/vLLM behavior is verified only in the remote two-40G environment.
+Tests must prove strict JSON handling; no LLM or generated-code execution in structured Executor; unchanged Calculator/legacy behavior; correct tool errors and atomicity; shared backend within a Solver and isolation across workers; no goal leakage; deterministic 80/20 blueprints and split isolation; API retry/resume/concurrency/usage/rejection; reference execution through AgentFlow; valid two/three-turn baseline; 16-worker isolation; exact token IDs; one normalization per trajectory group; broadcast advantage; per-turn FP32 ratio and 0.001/0.003 clip; safe zero-variance skipping; GSM8K regression; and remote adapter save/reload.
 
 ## Metrics
 
-At minimum, training and evaluation report:
+Report binary success; JSON/action/tool validity; correct ticket/field/finish; direct versus indirect success; average turns and truncation; invalid/tool/infrastructure errors; reward mean/std; zero-variance groups; nonzero-advantage trajectories/turns; turn ratio/clip/KL; token counts; and controlled baseline-versus-adapter results.
 
-- binary episode success rate;
-- JSON-valid and tool-call-valid rates;
-- correct-ticket and correct-field rates;
-- finish correctness;
-- average planner turns and truncation rate;
-- invalid-action and infrastructure-failure rates;
-- reward mean/std;
-- zero-variance rollout-group fraction;
-- count of nonzero-advantage trajectories and planner turns;
-- turn ratio mean/min/max, clip fraction, and approximate KL;
-- planner response-token counts.
-
-No dataset validation result, successful smoke test, finite loss, or observed loss decrease may be described as a model-performance improvement.
+Dataset generation, smoke success, finite loss, or loss decrease must not be described as model improvement.
 
 ## Completion Criteria
 
-The first version is complete when:
-
-- all task-specific code is isolated under `project/try_ticket_agent` except minimal tested backward-compatible GSPO integration changes;
-- no SFT files or execution path exist;
-- the three tools and deterministic dispatcher satisfy their contracts;
-- worker-local state passes concurrency isolation tests;
-- hidden goals never appear in planner-visible data;
-- binary reward and turn-level GSPO grouping semantics are covered by tests;
-- exact sampled token IDs are used for every trained planner turn;
-- new train/eval configs and scripts mirror the existing remote operational interface and have consistent defaults;
-- local non-GPU tests and existing GSM8K regressions pass;
-- documented remote smoke commands are available, with remote-only checks clearly marked until executed.
+The task is complete when the baseline runs through core AgentFlow and registered BaseTools; GSPO replaces only Planner next-step generation; structured mode is opt-in with legacy regressions passing; no Ticket path executes generated code; no SFT exists; synthesized data passes deterministic validation, judge filtering, reference execution, hashing, and leakage checks; state isolation passes; exact token and turn-level GSPO semantics are tested; and baseline/train/eval scripts reproduce the existing remote operational pattern.
