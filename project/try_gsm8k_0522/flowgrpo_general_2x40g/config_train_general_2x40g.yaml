@@ -38,7 +38,8 @@ learning_rate: 2e-6
 weight_decay: 0.0
 max_grad_norm: 1.0
 planner_output_every: 50
-clip_range: 0.2
+clip_range_low: 0.001
+clip_range_high: 0.003
 policy_epochs: 2
 planner_max_new_tokens: 256
 planner_temperature: 1.2

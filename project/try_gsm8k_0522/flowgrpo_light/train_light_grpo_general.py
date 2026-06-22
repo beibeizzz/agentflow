@@ -103,7 +103,7 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Planner-only GRPO training with old-logprob ratio clipping for GSM8K.")
+    parser = argparse.ArgumentParser(description="Planner-only turn-level GSPO training for GSM8K.")
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--model-path", type=Path, default=None)
     parser.add_argument("--train-file", type=Path, default=None)
@@ -123,7 +123,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lora-rank", type=int, default=None)
     parser.add_argument("--lora-alpha", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
-    parser.add_argument("--clip-range", type=float, default=None)
+    parser.add_argument("--clip-range-low", type=float, default=None)
+    parser.add_argument("--clip-range-high", type=float, default=None)
     parser.add_argument("--policy-epochs", type=int, default=None)
     parser.add_argument("--rollout-backend", choices=["agentflow", "light"], default=None)
     parser.add_argument("--think-mode", choices=["default", "on", "off"], default=None)
@@ -133,6 +134,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--quiet-rollout", action="store_true")
     parser.add_argument("--planner-output-every", type=int, default=None)
     return parser.parse_args(argv)
+
+
+def resolve_clip_ranges(args: argparse.Namespace, config: dict[str, Any]) -> tuple[float, float]:
+    clip_range_low = float(
+        args.clip_range_low
+        if args.clip_range_low is not None
+        else config_value(config, "clip_range_low", 0.001)
+    )
+    clip_range_high = float(
+        args.clip_range_high
+        if args.clip_range_high is not None
+        else config_value(config, "clip_range_high", 0.003)
+    )
+    if clip_range_low <= 0:
+        raise SystemExit("clip_range_low must be > 0")
+    if clip_range_high <= 0:
+        raise SystemExit("clip_range_high must be > 0")
+    return clip_range_low, clip_range_high
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -193,9 +212,7 @@ def main(argv: list[str] | None = None) -> None:
     learning_rate = float(
         args.learning_rate if args.learning_rate is not None else config_value(config, "learning_rate", 5e-5)
     )
-    clip_range = float(args.clip_range if args.clip_range is not None else config_value(config, "clip_range", 0.2))
-    if clip_range <= 0:
-        raise SystemExit("clip_range must be > 0")
+    clip_range_low, clip_range_high = resolve_clip_ranges(args, config)
     policy_epochs = int(
         args.policy_epochs if args.policy_epochs is not None else config_value(config, "policy_epochs", 1)
     )
@@ -385,7 +402,8 @@ def main(argv: list[str] | None = None) -> None:
                     optimizer=optimizer,
                     rollouts=rollouts,
                     advantages=advantages,
-                    clip_range=clip_range,
+                    clip_range_low=clip_range_low,
+                    clip_range_high=clip_range_high,
                     max_grad_norm=float(config_value(config, "max_grad_norm", 1.0)),
                     logprob_micro_batch_size=logprob_micro_batch_size,
                     policy_epochs=policy_epochs,
@@ -428,7 +446,8 @@ def main(argv: list[str] | None = None) -> None:
                     "skipped_no_advantage": not updated,
                     "loss": loss,
                     "train_stats": train_stats,
-                    "clip_range": clip_range,
+                    "clip_range_low": clip_range_low,
+                    "clip_range_high": clip_range_high,
                     "policy_epochs": policy_epochs,
                     "answers": [answer for group in answer_groups for answer in group],
                     "answer_groups": answer_groups,
@@ -463,7 +482,8 @@ def main(argv: list[str] | None = None) -> None:
                     "ratio_max": train_stats["ratio_max"] if train_stats else None,
                     "clip_fraction": train_stats["clip_fraction"] if train_stats else None,
                     "approx_kl": train_stats["approx_kl"] if train_stats else None,
-                    "clip_range": clip_range,
+                    "clip_range_low": clip_range_low,
+                    "clip_range_high": clip_range_high,
                     "policy_epochs": policy_epochs,
                     "policy_update_count": train_stats["policy_update_count"] if train_stats else 0,
                     "epoch_losses": train_stats["epoch_losses"] if train_stats else [],
@@ -518,7 +538,8 @@ def main(argv: list[str] | None = None) -> None:
         "train_update_count": train_update_count,
         "skipped_no_advantage_count": skipped_no_advantage_count,
         "policy_epochs": policy_epochs,
-        "clip_range": clip_range,
+        "clip_range_low": clip_range_low,
+        "clip_range_high": clip_range_high,
         "elapsed_s": round(time.time() - started_at, 3),
     }
     write_json(output_dir / "train_summary.json", train_summary)

@@ -45,6 +45,8 @@ def _planner_sample(
         system_prompt=system_prompt,
         generation_kwargs=dict(generation_kwargs),
         response=generated.response,
+        prompt_token_ids=generated.prompt_token_ids,
+        response_token_ids=generated.response_token_ids,
     )
 
 

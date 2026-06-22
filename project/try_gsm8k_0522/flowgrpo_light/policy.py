@@ -11,6 +11,8 @@ import torch.nn.functional as F
 class GeneratedResponse:
     prompt: str
     response: str
+    prompt_token_ids: list[int] | None = None
+    response_token_ids: list[int] | None = None
 
 
 def _adapter_disabled(value: Any) -> bool:
@@ -131,10 +133,25 @@ class PlannerPolicy:
         with torch.no_grad():
             output = self.model.generate(**generation_kwargs)
         generated: list[GeneratedResponse] = []
-        for prompt, output_ids in zip(prompts, output, strict=True):
-            response_ids = output_ids[prompt_width:]
+        for index, (prompt, output_ids) in enumerate(zip(prompts, output, strict=True)):
+            prompt_ids = inputs["input_ids"][index][inputs["attention_mask"][index].to(dtype=torch.bool)].tolist()
+            response_ids = [int(token_id) for token_id in output_ids[prompt_width:].tolist()]
+            eos_token_id = self.tokenizer.eos_token_id
+            if eos_token_id is not None and int(eos_token_id) in response_ids:
+                response_ids = response_ids[: response_ids.index(int(eos_token_id)) + 1]
+            else:
+                pad_token_id = self.tokenizer.pad_token_id
+                while response_ids and pad_token_id is not None and response_ids[-1] == int(pad_token_id):
+                    response_ids.pop()
             response = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
-            generated.append(GeneratedResponse(prompt=prompt, response=response))
+            generated.append(
+                GeneratedResponse(
+                    prompt=prompt,
+                    response=response,
+                    prompt_token_ids=[int(token_id) for token_id in prompt_ids],
+                    response_token_ids=response_ids,
+                )
+            )
         return generated
 
     def render_agentflow_prompt(
@@ -225,7 +242,33 @@ class PlannerPolicy:
         if not prompts:
             return torch.empty(0, device=self.device)
 
-        input_ids, attention_mask, response_mask = self._encode_logprob_batch(prompts, responses)
+        prompt_token_ids = [self._tokenize(prompt, add_special_tokens=True) for prompt in prompts]
+        response_token_ids = [
+            self._tokenize(response, add_special_tokens=False) or [self.tokenizer.eos_token_id]
+            for response in responses
+        ]
+        return self.sequence_logprob_token_ids_many(
+            prompt_token_ids,
+            response_token_ids,
+            use_adapter=use_adapter,
+        )
+
+    def sequence_logprob_token_ids_many(
+        self,
+        prompt_token_ids: list[list[int]],
+        response_token_ids: list[list[int]],
+        *,
+        use_adapter: bool = True,
+    ) -> torch.Tensor:
+        if len(prompt_token_ids) != len(response_token_ids):
+            raise ValueError("prompt_token_ids and response_token_ids must have the same length")
+        if not prompt_token_ids:
+            return torch.empty(0, device=self.device)
+
+        input_ids, attention_mask, response_mask = self._encode_logprob_token_ids_batch(
+            prompt_token_ids,
+            response_token_ids,
+        )
         if use_adapter:
             logits = self.model(input_ids=input_ids, attention_mask=attention_mask).logits
         else:
@@ -236,15 +279,19 @@ class PlannerPolicy:
         shift_labels = input_ids[:, 1:]
         response_positions = response_mask.to(dtype=torch.bool)
         if not bool(response_positions.any()):
-            return torch.zeros(len(prompts), dtype=shift_logits.dtype, device=self.device)
+            return torch.zeros(len(prompt_token_ids), dtype=shift_logits.dtype, device=self.device)
 
         selected_logits = shift_logits[response_positions]
         selected_labels = shift_labels[response_positions]
         selected_token_logprobs = -F.cross_entropy(selected_logits, selected_labels, reduction="none")
 
-        batch_indices = torch.arange(len(prompts), device=self.device).unsqueeze(1).expand_as(shift_labels)
+        batch_indices = torch.arange(len(prompt_token_ids), device=self.device).unsqueeze(1).expand_as(shift_labels)
         selected_batch_indices = batch_indices[response_positions]
-        sequence_logprobs = torch.zeros(len(prompts), dtype=selected_token_logprobs.dtype, device=self.device)
+        sequence_logprobs = torch.zeros(
+            len(prompt_token_ids),
+            dtype=selected_token_logprobs.dtype,
+            device=self.device,
+        )
         sequence_logprobs.index_add_(0, selected_batch_indices, selected_token_logprobs)
         return sequence_logprobs
 
@@ -273,6 +320,13 @@ class PlannerPolicy:
             self._tokenize(response, add_special_tokens=False) or [self.tokenizer.eos_token_id]
             for response in responses
         ]
+        return self._encode_logprob_token_ids_batch(encoded_prompts, encoded_responses)
+
+    def _encode_logprob_token_ids_batch(
+        self,
+        encoded_prompts: list[list[int]],
+        encoded_responses: list[list[int]],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         sequences = [
             prompt_ids + response_ids
             for prompt_ids, response_ids in zip(encoded_prompts, encoded_responses, strict=True)

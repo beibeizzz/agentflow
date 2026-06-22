@@ -40,8 +40,8 @@ The existing text-based log-probability API remains available for compatibility.
 The single `clip_range` input will be replaced on the general training path by:
 
 ```yaml
-clip_range_low: 0.0003
-clip_range_high: 0.0004
+clip_range_low: 0.001
+clip_range_high: 0.003
 ```
 
 The clipped ratio interval is `[1 - clip_range_low, 1 + clip_range_high]`. Both values must be positive. The general launcher will use `CLIP_RANGE_LOW` and `CLIP_RANGE_HIGH`; the old `CLIP_RANGE` option will not be accepted silently.

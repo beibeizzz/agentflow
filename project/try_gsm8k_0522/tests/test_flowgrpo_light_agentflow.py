@@ -34,7 +34,12 @@ class FakePolicy:
         **generation_kwargs,
     ) -> GeneratedResponse:
         self.calls.append((prompt, system_prompt, think_mode, dict(generation_kwargs)))
-        return GeneratedResponse(prompt=f"rendered:{system_prompt}:{prompt}", response='{"Calculation": "1+1"}')
+        return GeneratedResponse(
+            prompt=f"rendered:{system_prompt}:{prompt}",
+            response='{"Calculation": "1+1"}',
+            prompt_token_ids=[11, 12],
+            response_token_ids=[21, 99],
+        )
 
     def generate_many_for_agentflow(
         self,
@@ -50,6 +55,8 @@ class FakePolicy:
             GeneratedResponse(
                 prompt=f"rendered:{system_prompt}:{prompt}",
                 response=f"response:{prompt}",
+                prompt_token_ids=[11, 12],
+                response_token_ids=[21, 99],
             )
             for prompt, system_prompt in zip(prompts, effective_system_prompts, strict=True)
         ]
@@ -148,7 +155,7 @@ class AgentFlowLightRolloutTests(unittest.TestCase):
             def generate(self, **kwargs):
                 input_ids = kwargs["input_ids"]
                 self.generate_calls.append(input_ids.clone())
-                additions = torch.tensor([[201, 202], [203, 204]])
+                additions = torch.tensor([[201, 99, 0], [203, 204, 99]])
                 return torch.cat([input_ids, additions], dim=1)
 
         policy.tokenizer = FakeTokenizer()
@@ -159,8 +166,19 @@ class AgentFlowLightRolloutTests(unittest.TestCase):
 
         responses = policy.generate_many(["short", "longer"])
 
-        self.assertEqual([item.response for item in responses], ["201 202", "203 204"])
+        self.assertEqual([item.response for item in responses], ["201 99", "203 204 99"])
         self.assertEqual([item.prompt for item in responses], ["short", "longer"])
+        self.assertEqual(
+            [item.prompt_token_ids for item in responses],
+            [
+                [ord(char) % 50 + 1 for char in "short"] + [99],
+                [ord(char) % 50 + 1 for char in "longer"] + [99],
+            ],
+        )
+        self.assertEqual(
+            [item.response_token_ids for item in responses],
+            [[201, 99], [203, 204, 99]],
+        )
         self.assertEqual(len(policy.model.generate_calls), 1)
         self.assertEqual(policy.tokenizer.padding_side, "left")
 
@@ -232,6 +250,8 @@ class AgentFlowLightRolloutTests(unittest.TestCase):
             {"max_new_tokens": 512, "temperature": 0.0, "top_p": 0.95},
         )
         self.assertEqual(engine.samples[0].response, '{"Calculation": "1+1"}')
+        self.assertEqual(engine.samples[0].prompt_token_ids, [11, 12])
+        self.assertEqual(engine.samples[0].response_token_ids, [21, 99])
 
     def test_rollout_runner_calls_solver_solve_and_scores_direct_output(self) -> None:
         policy = FakePolicy()

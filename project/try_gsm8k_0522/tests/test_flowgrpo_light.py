@@ -133,6 +133,43 @@ class TestFlowGRPOLight(unittest.TestCase):
 
         self.assertTrue(torch.allclose(logprobs.cpu(), torch.stack(expected)))
 
+    def test_policy_sequence_logprob_token_ids_many_scores_exact_response_ids_including_eos(self):
+        policy = PlannerPolicy.__new__(PlannerPolicy)
+
+        class FakeTokenizer:
+            pad_token_id = 0
+            eos_token_id = 2
+
+        class FakeModel:
+            def __init__(self):
+                self.param = torch.nn.Parameter(torch.zeros(1))
+
+            def parameters(self):
+                yield self.param
+
+            def __call__(self, *, input_ids, attention_mask):
+                vocab_scores = torch.arange(16, dtype=torch.float32, device=input_ids.device)
+                logits = vocab_scores.view(1, 1, -1).expand(input_ids.shape[0], input_ids.shape[1], -1)
+                return type("Output", (), {"logits": logits})
+
+        policy.tokenizer = FakeTokenizer()
+        policy.model = FakeModel()
+
+        response_ids = [[7, 2], [8, 9, 2]]
+        logprobs = policy.sequence_logprob_token_ids_many(
+            [[4, 5], [6]],
+            response_ids,
+        )
+
+        token_logprobs = torch.log_softmax(torch.arange(16, dtype=torch.float32), dim=-1)
+        expected = torch.tensor(
+            [
+                sum(float(token_logprobs[token_id]) for token_id in item)
+                for item in response_ids
+            ]
+        )
+        self.assertTrue(torch.allclose(logprobs.cpu(), expected))
+
     def test_train_step_uses_batched_logprob_micro_batches_for_one_optimizer_step(self):
         class FakePolicy:
             def __init__(self):

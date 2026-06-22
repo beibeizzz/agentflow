@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 class PlannerSample:
     prompt: str
     response: str
+    prompt_token_ids: list[int] | None = None
+    response_token_ids: list[int] | None = None
     raw_prompt: str | None = None
     system_prompt: str | None = None
     rendered_prompt: str | None = None
@@ -73,7 +75,14 @@ def run_rollout(
             max_steps=max_steps,
         )
         generated = policy.generate(prompt)
-        samples.append(PlannerSample(prompt=generated.prompt, response=generated.response))
+        samples.append(
+            PlannerSample(
+                prompt=generated.prompt,
+                response=generated.response,
+                prompt_token_ids=generated.prompt_token_ids,
+                response_token_ids=generated.response_token_ids,
+            )
+        )
         try:
             sub_goal, calculation = parse_planner_response(generated.response)
             result = format_number(safe_eval_calculation(calculation))

@@ -12,10 +12,21 @@ For each trainable planner response:
 old_logprob = log pi_old(response | prompt)
 current_logprob = log pi_theta(response | prompt)
 ratio = exp(current_logprob - old_logprob)
-loss = -min(ratio * advantage, clip(ratio, 1-eps, 1+eps) * advantage)
+loss = -min(
+    ratio * advantage,
+    clip(ratio, 1-eps_low, 1+eps_high) * advantage,
+)
 ```
 
-The implementation normalizes sequence logprob by response token length before taking the ratio.
+The implementation uses the exact sampled response token IDs, normalizes
+sequence logprob by response token length, and applies asymmetric clipping.
+
+The default sequence-ratio clipping bounds are:
+
+```text
+clip_range_low=0.001
+clip_range_high=0.003
+```
 
 ## Start vLLM
 
@@ -36,7 +47,8 @@ CUDA_VISIBLE_DEVICES=0 bash try_gsm8k_0522/flowgrpo_general_2x40g/run_train_gene
 Useful overrides:
 
 ```bash
-CLIP_RANGE=0.1 bash try_gsm8k_0522/flowgrpo_general_2x40g/run_train_general_2x40g.sh
+CLIP_RANGE_LOW=0.001 CLIP_RANGE_HIGH=0.003 \
+  bash try_gsm8k_0522/flowgrpo_general_2x40g/run_train_general_2x40g.sh
 ```
 
 ```bash
