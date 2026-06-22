@@ -4,6 +4,8 @@ import inspect
 import json
 import unittest
 
+import try_ticket_agent.tests  # Bootstrap inner AgentFlow when unittest uses discovery mode.
+
 from agentflow.models.formatters import StructuredToolAction
 from agentflow.models.executor import Executor
 from agentflow.models.memory import Memory

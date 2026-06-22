@@ -16,6 +16,8 @@ EVAL_CONFIG = ROOT / "flowgrpo_general_2x40g" / "config_eval_learnable_general_2
 BASELINE_CONFIG = ROOT / "baseline" / "config_agentflow_baseline.yaml"
 TRAIN_SCRIPT = ROOT / "flowgrpo_general_2x40g" / "run_train_general_2x40g.sh"
 BASELINE_SCRIPT = ROOT / "baseline" / "run_agentflow_baseline.sh"
+README = ROOT / "README.md"
+DATA_README = ROOT / "data" / "README.md"
 
 
 def load_yaml(path: Path):
@@ -30,6 +32,27 @@ def shell_default(text: str, name: str) -> str:
 
 
 class RemoteConfigTests(unittest.TestCase):
+    def test_readmes_document_reproducible_no_sft_workflow(self) -> None:
+        text = README.read_text(encoding="utf-8") + "\n" + DATA_README.read_text(encoding="utf-8")
+        commands = [
+            "scripts/generate_blueprints.py",
+            "scripts/synthesize_dataset.py",
+            "scripts/validate_dataset.py --dataset",
+            "baseline/run_agentflow_baseline.sh",
+            "run_train_general_2x40g.sh",
+            "EVAL_MODE=baseline",
+            "EVAL_MODE=adapter",
+        ]
+        for command in commands:
+            self.assertIn(command, text)
+        for statement in (
+            "No SFT",
+            "binary reward",
+            "per-turn GSPO ratio",
+            "offline-only synthesis judge",
+            "legacy defaults remain unchanged",
+        ):
+            self.assertIn(statement, text)
     def test_train_cli_accepts_every_shell_override(self) -> None:
         args = parse_train_args(
             [
@@ -107,7 +130,7 @@ class RemoteConfigTests(unittest.TestCase):
 
     def test_ticket_experiment_has_no_sft_configuration(self) -> None:
         for path in ROOT.rglob("*"):
-            if path.is_file() and path.suffix in {".yaml", ".sh", ".py"}:
+            if path.is_file() and "tests" not in path.parts and path.suffix in {".yaml", ".sh", ".py"}:
                 self.assertNotRegex(path.read_text(encoding="utf-8"), r"(?i)\bsft\b")
 
 

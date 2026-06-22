@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import unittest
 
+import try_ticket_agent.tests  # Bootstrap inner AgentFlow when unittest uses discovery mode.
+
 from try_ticket_agent.data_synthesis.blueprints import (
     execute_reference_actions,
     generate_blueprint,
