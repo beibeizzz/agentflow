@@ -4,8 +4,20 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
+import types
 import urllib.request
 from typing import Any
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+if "agentflow" not in sys.modules:
+    agentflow_core = PROJECT_DIR / "agentflow" / "agentflow"
+    agentflow_package = types.ModuleType("agentflow")
+    agentflow_package.__path__ = [str(agentflow_core)]
+    agentflow_package.__file__ = str(agentflow_core / "__init__.py")
+    sys.modules["agentflow"] = agentflow_package
 
 from try_ticket_agent.ticket_env.solver_factory import construct_ticket_runtime
 
@@ -102,19 +114,51 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the synthetic Ticket task through core AgentFlow.")
-    parser.add_argument("--data-file", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--llm-engine-name", default="vllm-Qwen3-0.6B")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
-    parser.add_argument("--max-steps", type=int, default=3)
-    parser.add_argument("--max-time", type=int, default=120)
-    parser.add_argument("--max-tokens", type=int, default=512)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--think-mode", choices=["default", "on", "off"], default="off")
-    parser.add_argument("--query-analysis-think-mode", choices=["default", "on", "off"], default="on")
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--data-file", type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--llm-engine-name")
+    parser.add_argument("--base-url")
+    parser.add_argument("--max-steps", type=int)
+    parser.add_argument("--max-time", type=int)
+    parser.add_argument("--max-tokens", type=int)
+    parser.add_argument("--temperature", type=float)
+    parser.add_argument("--think-mode", choices=["default", "on", "off"])
+    parser.add_argument("--query-analysis-think-mode", choices=["default", "on", "off"])
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--overwrite", action="store_true")
-    return parser.parse_args(argv)
+    parser.add_argument("--overwrite", action="store_true", default=None)
+    args = parser.parse_args(argv)
+    config: dict[str, Any] = {}
+    if args.config is not None:
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError("PyYAML is required to read baseline config") from exc
+        loaded = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            parser.error("baseline config must be a YAML object")
+        config = loaded
+    defaults = {
+        "data_file": config.get("eval_file"),
+        "output_dir": config.get("output_dir"),
+        "llm_engine_name": config.get("llm_engine_name", "vllm-Qwen3-0.6B"),
+        "base_url": config.get("frozen_base_url", "http://127.0.0.1:8000/v1"),
+        "max_steps": int(config.get("max_steps", 3)),
+        "max_time": int(config.get("max_time", 120)),
+        "max_tokens": int(config.get("max_tokens", 512)),
+        "temperature": float(config.get("temperature", 0.0)),
+        "think_mode": config.get("think_mode", "off"),
+        "query_analysis_think_mode": config.get("query_analysis_think_mode", "on"),
+        "overwrite": bool(config.get("overwrite", False)),
+    }
+    for name, value in defaults.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
+    if args.data_file is None or args.output_dir is None:
+        parser.error("data file and output directory are required via CLI or config")
+    args.data_file = Path(args.data_file)
+    args.output_dir = Path(args.output_dir)
+    return args
 
 
 def main() -> int:

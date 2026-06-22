@@ -6,12 +6,21 @@ from pathlib import Path
 import json
 import sys
 import time
+import types
 from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 GSM_DIR = PROJECT_DIR / "try_gsm8k_0522"
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 if str(GSM_DIR) not in sys.path:
     sys.path.insert(0, str(GSM_DIR))
+if "agentflow" not in sys.modules:
+    agentflow_core = PROJECT_DIR / "agentflow" / "agentflow"
+    agentflow_package = types.ModuleType("agentflow")
+    agentflow_package.__path__ = [str(agentflow_core)]
+    agentflow_package.__file__ = str(agentflow_core / "__init__.py")
+    sys.modules["agentflow"] = agentflow_package
 
 from flowgrpo_light.grpo_objective import build_loss_items, train_step_grpo
 from flowgrpo_light.agentflow_rollout import AgentFlowBatchRolloutRunner
@@ -112,15 +121,30 @@ def ticket_result_adapter(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Ticket AgentFlow binary turn-level GSPO training.")
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--model-path")
+    parser.add_argument("--train-file", type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--frozen-base-url")
+    parser.add_argument("--frozen-model")
+    parser.add_argument("--question-batch-size", type=int)
+    parser.add_argument("--group-size", type=int)
+    parser.add_argument("--rollout-concurrency", type=int)
+    parser.add_argument("--planner-batch-size", type=int)
+    parser.add_argument("--max-steps", type=int)
+    parser.add_argument("--clip-range-low", type=float)
+    parser.add_argument("--clip-range-high", type=float)
+    parser.add_argument("--policy-epochs", type=int)
+    parser.add_argument("--max-train-items", type=int)
+    parser.add_argument("--epochs", type=int)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     config = load_yaml_config(args.config)
-    model_path = str(config_value(config, "model_path", "Qwen/Qwen3-0.6B"))
-    train_file = Path(config_value(config, "train_file", "try_ticket_agent/data/generated/train.jsonl"))
-    output_dir = Path(config_value(config, "output_dir", "try_ticket_agent/flowgrpo_general_2x40g/outputs"))
+    model_path = str(args.model_path or config_value(config, "model_path", "Qwen/Qwen3-0.6B"))
+    train_file = Path(args.train_file or config_value(config, "train_file", "try_ticket_agent/data/generated/train.jsonl"))
+    output_dir = Path(args.output_dir or config_value(config, "output_dir", "try_ticket_agent/flowgrpo_general_2x40g/outputs"))
     if not train_file.is_file():
         raise SystemExit(f"Training file does not exist: {train_file}")
 
@@ -130,8 +154,8 @@ def main(argv: list[str] | None = None) -> None:
     seed = int(config_value(config, "seed", 42))
     random.seed(seed)
     torch.manual_seed(seed)
-    frozen_model = str(config_value(config, "frozen_model", "Qwen3-0.6B"))
-    frozen_base_url = str(config_value(config, "frozen_base_url", "http://127.0.0.1:8000/v1"))
+    frozen_model = str(args.frozen_model or config_value(config, "frozen_model", "Qwen3-0.6B"))
+    frozen_base_url = str(args.frozen_base_url or config_value(config, "frozen_base_url", "http://127.0.0.1:8000/v1"))
     FrozenClient(
         base_url=frozen_base_url,
         model=frozen_model,
@@ -153,33 +177,35 @@ def main(argv: list[str] | None = None) -> None:
         lr=float(config_value(config, "learning_rate", 2e-6)),
         weight_decay=float(config_value(config, "weight_decay", 0.0)),
     )
-    group_size = int(config_value(config, "group_size", 8))
-    question_batch_size = int(config_value(config, "question_batch_size", 4))
-    clip_low = float(config_value(config, "clip_range_low", DEFAULT_CLIP_RANGE_LOW))
-    clip_high = float(config_value(config, "clip_range_high", DEFAULT_CLIP_RANGE_HIGH))
+    group_size = int(args.group_size if args.group_size is not None else config_value(config, "group_size", 8))
+    question_batch_size = int(args.question_batch_size if args.question_batch_size is not None else config_value(config, "question_batch_size", 4))
+    clip_low = float(args.clip_range_low if args.clip_range_low is not None else config_value(config, "clip_range_low", DEFAULT_CLIP_RANGE_LOW))
+    clip_high = float(args.clip_range_high if args.clip_range_high is not None else config_value(config, "clip_range_high", DEFAULT_CLIP_RANGE_HIGH))
     if clip_low <= 0 or clip_high <= 0:
         raise SystemExit("clip ranges must be positive")
     runner = build_ticket_rollout_runner(
         policy=policy,
         frozen_model=frozen_model,
         frozen_base_url=frozen_base_url,
-        max_steps=int(config_value(config, "max_steps", 3)),
+        max_steps=int(args.max_steps if args.max_steps is not None else config_value(config, "max_steps", 3)),
         max_time=int(config_value(config, "max_time", 120)),
         max_tokens=int(config_value(config, "max_tokens", 512)),
-        rollout_concurrency=int(config_value(config, "rollout_concurrency", 32)),
-        planner_batch_size=int(config_value(config, "planner_batch_size", 32)),
+        rollout_concurrency=int(args.rollout_concurrency if args.rollout_concurrency is not None else config_value(config, "rollout_concurrency", 32)),
+        planner_batch_size=int(args.planner_batch_size if args.planner_batch_size is not None else config_value(config, "planner_batch_size", 32)),
         planner_batch_timeout_s=float(config_value(config, "planner_batch_timeout_s", 0.02)),
         think_mode=str(config_value(config, "think_mode", "off")),
         query_analysis_think_mode=str(config_value(config, "query_analysis_think_mode", "on")),
     )
-    rows = load_rows(train_file)[: int(config_value(config, "max_train_items", 2500))]
+    max_train_items = int(args.max_train_items if args.max_train_items is not None else config_value(config, "max_train_items", 2500))
+    rows = load_rows(train_file)[:max_train_items]
     random.shuffle(rows)
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = output_dir / "metrics.jsonl"
     step = 0
     started_at = time.time()
     try:
-        for epoch in range(int(config_value(config, "epochs", 1))):
+        epochs = int(args.epochs if args.epochs is not None else config_value(config, "epochs", 1))
+        for epoch in range(epochs):
             for row_index, batch in iter_batches(rows, question_batch_size):
                 step_started = time.time()
                 groups = runner.run_batch(batch, group_size=group_size)
@@ -193,7 +219,7 @@ def main(argv: list[str] | None = None) -> None:
                     clip_range_high=clip_high,
                     max_grad_norm=float(config_value(config, "max_grad_norm", 1.0)),
                     logprob_micro_batch_size=int(config_value(config, "logprob_micro_batch_size", 8)),
-                    policy_epochs=int(config_value(config, "policy_epochs", 2)),
+                    policy_epochs=int(args.policy_epochs if args.policy_epochs is not None else config_value(config, "policy_epochs", 2)),
                 )
                 step += 1
                 flat_group = [item for group in groups for item in group]

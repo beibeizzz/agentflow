@@ -1,0 +1,15 @@
+model_path: /inspire/hdd/project/fdu-aidake-cfff/public/zhangjiangbei/agentflow/AgentFlow/agentflow0525/agentflow/model/Qwen/Qwen3-0.6B
+frozen_model: Qwen3-0.6B
+llm_engine_name: vllm-Qwen3-0.6B
+frozen_base_url: http://127.0.0.1:8000/v1
+eval_file: try_ticket_agent/data/generated/test.jsonl
+output_dir: try_ticket_agent/baseline/outputs/test
+temperature: 0.0
+think_mode: off
+query_analysis_think_mode: on
+max_steps: 3
+max_time: 120
+max_tokens: 512
+planner_action_mode: structured
+executor_mode: structured
+output_types: workflow
