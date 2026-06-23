@@ -59,6 +59,7 @@ class ScriptedPlanner:
         self.action_mode = "structured"
         self.available_tools = list(TOOLS)
         self.toolbox_metadata = {name: {} for name in TOOLS}
+        self.generation_configs: dict[str, object] = {}
         self.visible_inputs: list[str] = []
 
     def analyze_query(self, question: str, image: object, json_data: object = None) -> str:
@@ -179,6 +180,19 @@ class TicketSolverTests(unittest.TestCase):
         ]
         self.assertEqual(runtime.run_episode(episode())["reward"], 1.0)
 
+    def test_runtime_sets_ticket_query_analysis_prompt_for_small_model(self) -> None:
+        _, builder = self.build_runtime([])
+        config = builder.planner.generation_configs["query_analysis"]
+        prompt = str(config["prompt_template"])
+
+        self.assertIn("ticket workflow", prompt.lower())
+        self.assertIn("direct", prompt.lower())
+        self.assertIn("query", prompt.lower())
+        self.assertIn("update", prompt.lower())
+        self.assertIn("finish", prompt.lower())
+        self.assertNotIn("GSM8K", prompt)
+        self.assertNotIn("math problem", prompt.lower())
+        self.assertLessEqual(int(config["max_tokens"]), 256)
 
 if __name__ == "__main__":
     unittest.main()

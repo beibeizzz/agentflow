@@ -10,6 +10,18 @@ from agentflow.tools.ticket_common.backend import TicketBackend
 from .episode_io import EpisodeSpec, parse_episode
 from .verifier import TicketVerifier
 
+TICKET_QUERY_ANALYSIS_PROMPT = """Summarize the ticket workflow in one short plan.
+User request: {question}
+Available tools: {available_tools}
+
+Rules:
+- Direct: update the ticket, then finish.
+- Indirect: query by customer_id or order_id, update the returned ticket, then finish.
+- Track only lookup key, target field/value, and finish outcome completed.
+- Keep it concise.
+"""
+
+TICKET_QUERY_ANALYSIS_SYSTEM_PROMPT = "Plan concise ticket workflows."
 
 TICKET_TOOL_NAMES = ["Ticket_Query_Tool", "Ticket_Update_Tool", "Ticket_Finish_Tool"]
 
@@ -71,6 +83,19 @@ def construct_ticket_runtime(
         executor_mode="structured",
         verbose=False,
     )
+
+    planner = getattr(solver, "planner", None)
+    if planner is not None:
+        generation_configs = dict(getattr(planner, "generation_configs", {}) or {})
+        generation_configs["query_analysis"] = {
+            "prompt_template": TICKET_QUERY_ANALYSIS_PROMPT,
+            "system_prompt": TICKET_QUERY_ANALYSIS_SYSTEM_PROMPT,
+            "max_tokens": 192,
+            "temperature": 0.0,
+            "top_p": 0.95,
+        }
+        planner.generation_configs = generation_configs
+
     backend = TicketBackend()
     for tool_name in TICKET_TOOL_NAMES:
         tool = solver.executor.tool_instances_cache.get(tool_name)

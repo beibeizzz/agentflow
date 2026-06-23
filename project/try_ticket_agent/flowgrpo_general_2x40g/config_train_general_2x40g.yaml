@@ -8,8 +8,8 @@ frozen_timeout: 120
 output_types: workflow
 planner_action_mode: structured
 executor_mode: structured
-think_mode: off
-query_analysis_think_mode: on
+think_mode: "off"
+query_analysis_think_mode: "on"
 max_time: 120
 max_tokens: 512
 max_steps: 3
