@@ -1,6 +1,6 @@
 # Ticket AgentFlow + turn-level GSPO
 
-This is an isolated synthetic ticket task built on the repository's existing AgentFlow implementation. It uses exactly three tools: `Ticket_Query_Tool`, `Ticket_Update_Tool`, and `Ticket_Finish_Tool`. Direct episodes require Update → Finish; indirect episodes require Query → Update → Finish. No SFT is used: the experiment order is frozen AgentFlow baseline first, then LoRA turn-level GSPO.
+This is an isolated synthetic ticket task built on the repository's existing AgentFlow implementation. It uses exactly three tools: `Ticket_Query_Tool`, `Ticket_Update_Tool`, and `Ticket_Finish_Tool`. Direct episodes require Update -> Finish; indirect episodes require Query -> Update -> Finish. No SFT is used: the experiment order is frozen AgentFlow baseline first, then LoRA turn-level GSPO.
 
 The task uses binary reward: the hidden verifier returns 1 only when the requested field, finish submission, step limit, and no-collateral-mutation checks all pass. Hidden `initial_state` and `goal_spec` are bound to an episode backend and never enter Planner prompts or Memory. Every concurrent solver owns a separate backend and reset replaces Memory.
 
@@ -15,7 +15,9 @@ DEEPSEEK_API_KEY=... python try_ticket_agent/scripts/synthesize_dataset.py --con
 python try_ticket_agent/scripts/validate_dataset.py --dataset try_ticket_agent/data/generated
 ```
 
-Synthesis is blueprint → LLM rewrite → deterministic validator → offline-only synthesis judge → registered-tool reference execution. Missing credentials stop the run; there is no template fallback. Progress, rejected records, usage, summaries, and SHA-256 manifests support resume and audit.
+Synthesis is blueprint -> LLM rewrite -> deterministic validator -> LLM judge used only during data synthesis -> registered-tool reference execution. Missing credentials stop the run; there is no template fallback. Progress, rejected records, usage, summaries, and SHA-256 manifests support resume and audit.
+
+Local synthesis is CPU/lightweight orchestration around an OpenAI-compatible API. It requires `openai`, `PyYAML`, `DEEPSEEK_API_KEY`, network access to the configured base URL, and a copied `config_synthesis.yaml`; it does not require a local GPU and may incur API charges.
 
 ## Baseline and training
 
@@ -40,4 +42,4 @@ EVAL_MODE=baseline ADAPTER_PATH=false bash try_ticket_agent/flowgrpo_general_2x4
 EVAL_MODE=adapter ADAPTER_PATH=try_ticket_agent/flowgrpo_general_2x40g/outputs/train_general_2x40g/final_adapter bash try_ticket_agent/flowgrpo_general_2x40g/run_eval_learnable_general_2x40g.sh
 ```
 
-Evaluation reports overall and direct/indirect success, invalid-action rate, and infrastructure-failure rate separately. A local run cannot establish remote GPU success; verify finite loss/ratio/KL, LoRA parameter updates, and adapter save/reload on the target 2×40G environment.
+Evaluation reports overall and direct/indirect success, invalid-action rate, and infrastructure-failure rate separately. A local run cannot establish remote GPU success; verify finite loss/ratio/KL, LoRA parameter updates, and adapter save/reload on the target 2x40G environment.

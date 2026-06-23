@@ -49,10 +49,14 @@ class RemoteConfigTests(unittest.TestCase):
             "No SFT",
             "binary reward",
             "per-turn GSPO ratio",
-            "offline-only synthesis judge",
+            "LLM judge used only during data synthesis",
             "legacy defaults remain unchanged",
         ):
             self.assertIn(statement, text)
+        self.assertNotIn("offline-only synthesis judge", text)
+        self.assertIn("DEEPSEEK_API_KEY", text)
+        self.assertIn("config_synthesis.yaml", text)
+        self.assertIn("scripts/synthesize_dataset.py --config", text)
     def test_train_cli_accepts_every_shell_override(self) -> None:
         args = parse_train_args(
             [
