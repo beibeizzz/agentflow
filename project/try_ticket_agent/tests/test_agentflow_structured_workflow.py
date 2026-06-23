@@ -188,6 +188,35 @@ class StructuredPlannerTests(unittest.TestCase):
         self.assertIn("Return exactly one JSON object", str(prompt))
         self.assertIs(kwargs["response_format"], StructuredToolAction)
 
+    def test_structured_generation_uses_next_step_prompt_template_and_strips_analysis_think(self) -> None:
+        planner = make_planner(action_mode="structured")
+        planner.generation_configs = {
+            "planner_next_step": {
+                "prompt_template": "Ticket next step\nRequest: {question}\nAnalysis: {query_analysis}\nMemory: {memory_actions}",
+                "max_tokens": 128,
+                "temperature": 0.0,
+            }
+        }
+        json_data: dict[str, object] = {}
+
+        planner.generate_next_step(
+            "Update T-1",
+            None,
+            "<think>long private reasoning</think>Short plan: update then finish.",
+            Memory(),
+            1,
+            3,
+            json_data=json_data,
+        )
+
+        prompt, kwargs = planner.llm_engine.calls[0]
+        self.assertIn("Ticket next step", str(prompt))
+        self.assertIn("Short plan: update then finish.", str(prompt))
+        self.assertNotIn("long private reasoning", str(prompt))
+        self.assertEqual(kwargs["max_tokens"], 128)
+        self.assertEqual(kwargs["temperature"], 0.0)
+
+
     def test_planner_constructor_defaults_to_legacy_mode(self) -> None:
         signature = inspect.signature(Planner.__init__)
         self.assertEqual(signature.parameters["action_mode"].default, "legacy")

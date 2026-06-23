@@ -194,5 +194,24 @@ class TicketSolverTests(unittest.TestCase):
         self.assertNotIn("math problem", prompt.lower())
         self.assertLessEqual(int(config["max_tokens"]), 256)
 
+    def test_runtime_sets_ticket_next_step_prompt_for_small_model(self) -> None:
+        _, builder = self.build_runtime([])
+        config = builder.planner.generation_configs["planner_next_step"]
+        prompt = str(config["prompt_template"])
+
+        self.assertIn("next ticket action", prompt.lower())
+        self.assertIn("Ticket_Query_Tool", prompt)
+        self.assertIn("Ticket_Update_Tool", prompt)
+        self.assertIn("Ticket_Finish_Tool", prompt)
+        self.assertIn("arguments", prompt)
+        self.assertIn("if update ok", prompt.lower())
+        self.assertIn("finish", prompt.lower())
+        self.assertIn("completed", prompt.lower())
+        self.assertIn("query ok", prompt.lower())
+        self.assertIn("data.ticket_id", prompt.lower())
+        self.assertNotIn("justify", prompt.lower())
+        self.assertNotIn("explain", prompt.lower())
+        self.assertLessEqual(int(config["max_tokens"]), 256)
+
 if __name__ == "__main__":
     unittest.main()

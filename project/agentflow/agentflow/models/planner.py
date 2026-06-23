@@ -50,6 +50,13 @@ class Planner:
     def _think_directive(self) -> str:
         return "/no_think\n" if getattr(self, "think_mode", "default") == "off" else ""
 
+    def _strip_think_block(self, text: Any) -> str:
+        text = str(text or "").strip()
+        if text.startswith("<think>"):
+            think_end = text.find("</think>")
+            return text[think_end + len("</think>"):].strip() if think_end != -1 else ""
+        return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
     def get_image_info(self, image_path: str) -> Dict[str, Any]:
         image_info = {}
         if image_path and os.path.isfile(image_path):
@@ -354,15 +361,31 @@ Problem:
 
     def generate_next_step(self, question: str, image: str, query_analysis: str, memory: Memory, step_count: int, max_step_count: int, json_data: Any = None) -> Any:
         calculator_only = self.available_tools == ["Calculator_Tool"]
-        if getattr(self, "action_mode", "legacy") == "structured":
+        planner_config = self._generation_config("planner_next_step")
+        clean_query_analysis = self._strip_think_block(query_analysis)
+        memory_actions = memory.get_actions()
+        prompt_template = planner_config.get("prompt_template")
+        if getattr(self, "action_mode", "legacy") == "structured" and prompt_template:
+            prompt_generate_next_step = str(prompt_template).format(
+                think_directive=self._think_directive(),
+                question=question,
+                query_analysis=clean_query_analysis,
+                memory_actions=memory_actions,
+                available_tools=self.available_tools,
+                tool_metadata=self.toolbox_metadata,
+                step_count=step_count,
+                max_step_count=max_step_count,
+                remaining_steps=max_step_count - step_count,
+            )
+        elif getattr(self, "action_mode", "legacy") == "structured":
             prompt_generate_next_step = f"""
 {self._think_directive()}Select exactly one available tool for the next workflow step.
 
 User request: {question}
-Query analysis: {query_analysis}
+Query analysis: {clean_query_analysis}
 Available tools: {self.available_tools}
 Tool metadata: {self.toolbox_metadata}
-Previous steps: {memory.get_actions()}
+Previous steps: {memory_actions}
 Current step: {step_count} of {max_step_count}
 
 Return exactly one JSON object with exactly these top-level fields:
@@ -508,8 +531,12 @@ Rules:
             else NextStep
         )
         generation_kwargs = {"response_format": response_format}
-        if calculator_only and getattr(self, "action_mode", "legacy") == "legacy":
-            generation_kwargs.update(self._generation_config("planner_next_step"))
+        if (calculator_only and getattr(self, "action_mode", "legacy") == "legacy") or getattr(self, "action_mode", "legacy") == "structured":
+            generation_kwargs.update({
+                key: value
+                for key, value in planner_config.items()
+                if key != "prompt_template"
+            })
         next_step = self.llm_engine(prompt_generate_next_step, **generation_kwargs)
         if json_data is not None:
             json_data[f"action_predictor_{step_count}_prompt"] = prompt_generate_next_step
