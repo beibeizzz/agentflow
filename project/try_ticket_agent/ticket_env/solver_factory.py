@@ -23,6 +23,29 @@ Rules:
 
 TICKET_QUERY_ANALYSIS_SYSTEM_PROMPT = "Plan concise ticket workflows."
 
+TICKET_NEXT_STEP_PROMPT = """{think_directive}Next ticket action.
+Request: {question}
+Plan: {query_analysis}
+Previous steps: {memory_actions}
+
+Return one JSON object only.
+
+Formats:
+- Ticket_Query_Tool arguments: lookup_by, value.
+- Ticket_Update_Tool arguments: ticket_id, field, value.
+- Ticket_Finish_Tool arguments: ticket_id, outcome completed.
+
+Rules:
+- If no previous step and request has ticket_id: update ticket_id, field, value.
+- If no previous step and request has customer_id or order_id: query lookup_by and value.
+- If query OK: update data.ticket_id with field and value.
+- If update OK: finish same ticket_id with outcome completed.
+- Never repeat an OK query or OK update.
+"""
+
+TICKET_NEXT_STEP_SYSTEM_PROMPT = "Choose the next ticket tool call."
+
+
 TICKET_TOOL_NAMES = ["Ticket_Query_Tool", "Ticket_Update_Tool", "Ticket_Finish_Tool"]
 
 
@@ -90,6 +113,13 @@ def construct_ticket_runtime(
         generation_configs["query_analysis"] = {
             "prompt_template": TICKET_QUERY_ANALYSIS_PROMPT,
             "system_prompt": TICKET_QUERY_ANALYSIS_SYSTEM_PROMPT,
+            "max_tokens": 192,
+            "temperature": 0.0,
+            "top_p": 0.95,
+        }
+        generation_configs["planner_next_step"] = {
+            "prompt_template": TICKET_NEXT_STEP_PROMPT,
+            "system_prompt": TICKET_NEXT_STEP_SYSTEM_PROMPT,
             "max_tokens": 192,
             "temperature": 0.0,
             "top_p": 0.95,
