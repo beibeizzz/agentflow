@@ -157,6 +157,10 @@ def _digest(payload: Any) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def blueprint_fingerprint(blueprint: EpisodeBlueprint) -> str:
+    return _digest(blueprint.to_dict())
+
+
 def validate_blueprint_collection(items: Iterable[EpisodeBlueprint]) -> dict[str, Any]:
     rows = list(items)
     episode_ids = [item.episode_id for item in rows]

@@ -82,6 +82,68 @@ class SynthesisPipelineTests(unittest.TestCase):
         self.assertEqual(resumed["accepted"], 1)
         self.assertEqual(resumed["api_calls"], 0)
 
+    def test_resume_rejects_same_episode_id_with_changed_blueprint_fingerprint(self) -> None:
+        original = generate_blueprint(seed=42, split="train", index=0)
+        changed = generate_blueprint(seed=99, split="train", index=0)
+        client = FakeClient(
+            [{"user_request": original.canonical_request}],
+            [{"accepted": True, "reasons": []}],
+        )
+        paths = PipelinePaths.in_directory(self.output_dir)
+        TicketSynthesisPipeline(client).run([original], paths=paths, resume=True)
+
+        second_client = FakeClient(
+            [{"user_request": changed.canonical_request}],
+            [{"accepted": True, "reasons": []}],
+        )
+        with self.assertRaisesRegex(RuntimeError, "fingerprint mismatch"):
+            TicketSynthesisPipeline(second_client).run([changed], paths=paths, resume=True)
+        self.assertEqual(second_client.rewrite_calls, [])
+        self.assertEqual(second_client.judge_calls, [])
+
+    def test_resume_rejects_extra_stale_progress_record(self) -> None:
+        first = generate_blueprint(seed=42, split="train", index=0)
+        second = generate_blueprint(seed=42, split="train", index=1)
+        client = FakeClient(
+            [
+                {"user_request": first.canonical_request},
+                {"user_request": second.canonical_request},
+            ],
+            [
+                {"accepted": True, "reasons": []},
+                {"accepted": True, "reasons": []},
+            ],
+        )
+        paths = PipelinePaths.in_directory(self.output_dir)
+        TicketSynthesisPipeline(client).run([first, second], paths=paths, resume=True)
+
+        resume_client = FakeClient([], [])
+        with self.assertRaisesRegex(RuntimeError, "stale progress"):
+            TicketSynthesisPipeline(resume_client).run([first], paths=paths, resume=True)
+        self.assertEqual(resume_client.rewrite_calls, [])
+        self.assertEqual(resume_client.judge_calls, [])
+
+    def test_resume_false_clears_stale_progress_and_recomputes(self) -> None:
+        original = generate_blueprint(seed=42, split="train", index=0)
+        changed = generate_blueprint(seed=99, split="train", index=0)
+        paths = PipelinePaths.in_directory(self.output_dir)
+        TicketSynthesisPipeline(
+            FakeClient(
+                [{"user_request": original.canonical_request}],
+                [{"accepted": True, "reasons": []}],
+            )
+        ).run([original], paths=paths, resume=True)
+
+        client = FakeClient(
+            [{"user_request": changed.canonical_request}],
+            [{"accepted": True, "reasons": []}],
+        )
+        summary = TicketSynthesisPipeline(client).run([changed], paths=paths, resume=False)
+        rows = [json.loads(line) for line in paths.dataset.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(summary["accepted"], 1)
+        self.assertEqual(summary["api_calls"], 2)
+        self.assertEqual([row["episode_id"] for row in rows], [changed.episode_id])
+
     def test_judge_schema_error_is_feedback_for_next_attempt(self) -> None:
         blueprint = generate_blueprint(seed=42, split="train", index=1)
         candidate = {"user_request": blueprint.canonical_request}

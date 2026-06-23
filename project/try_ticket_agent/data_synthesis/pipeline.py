@@ -8,9 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from .api_client import ApiUsage, JsonResponse, add_usage
-from .blueprints import execute_reference_actions
+from .blueprints import blueprint_fingerprint, execute_reference_actions
 from .schemas import EpisodeBlueprint
 from .validators import validate_candidate
+
+
+SYNTHESIS_PROGRESS_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -107,7 +110,7 @@ class TicketSynthesisPipeline:
             for path in (paths.progress, paths.rejected):
                 if path.exists():
                     path.unlink()
-        completed = _load_progress(paths.progress) if resume else {}
+        completed = _load_progress(paths.progress, blueprints) if resume else {}
         indexed = [(index, item) for index, item in enumerate(blueprints) if item.episode_id not in completed]
         invocation_api_calls = 0
 
@@ -117,6 +120,8 @@ class TicketSynthesisPipeline:
             progress = {
                 "source_index": index,
                 "episode_id": blueprint.episode_id,
+                "schema_version": SYNTHESIS_PROGRESS_SCHEMA_VERSION,
+                "blueprint_fingerprint": blueprint_fingerprint(blueprint),
                 "status": "accepted" if result.accepted else "rejected",
                 "attempts": result.attempts,
                 "api_calls": result.api_calls,
@@ -142,7 +147,7 @@ class TicketSynthesisPipeline:
                     index, blueprint = futures[future]
                     save(index, blueprint, future.result())
 
-        ordered = sorted(completed.values(), key=lambda item: int(item["source_index"]))
+        ordered = [completed[blueprint.episode_id] for blueprint in blueprints if blueprint.episode_id in completed]
         accepted_records = [item["record"] for item in ordered if item["status"] == "accepted"]
         rejected_count = sum(item["status"] == "rejected" for item in ordered)
         usage = ApiUsage()
@@ -187,18 +192,43 @@ def _atomic_write_text(path: Path, content: str) -> None:
     os.replace(temporary, path)
 
 
-def _load_progress(path: Path) -> dict[str, dict[str, Any]]:
+def _load_progress(path: Path, blueprints: list[EpisodeBlueprint]) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
-    completed = {}
+    expected = {blueprint.episode_id: blueprint_fingerprint(blueprint) for blueprint in blueprints}
+    completed: dict[str, dict[str, Any]] = {}
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
         try:
             payload = json.loads(line)
-            completed[str(payload["episode_id"])] = payload
+            episode_id = str(payload["episode_id"])
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             raise RuntimeError(f"Invalid progress record at {path}:{line_number}") from exc
+        if episode_id not in expected:
+            raise RuntimeError(
+                f"stale progress record at {path}:{line_number} for episode_id={episode_id}; "
+                "use resume: false or a new output directory"
+            )
+        try:
+            schema_version = int(payload.get("schema_version", 1))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"progress schema mismatch at {path}:{line_number} for episode_id={episode_id}; "
+                "use resume: false or a new output directory"
+            ) from exc
+        if schema_version != SYNTHESIS_PROGRESS_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"progress schema mismatch at {path}:{line_number} for episode_id={episode_id}; "
+                "use resume: false or a new output directory"
+            )
+        stored_fingerprint = str(payload.get("blueprint_fingerprint", ""))
+        if stored_fingerprint != expected[episode_id]:
+            raise RuntimeError(
+                f"fingerprint mismatch at {path}:{line_number} for episode_id={episode_id}; "
+                "use resume: false or a new output directory"
+            )
+        completed[episode_id] = payload
     return completed
 
 
