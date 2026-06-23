@@ -12,5 +12,8 @@ if [[ "$EVAL_MODE" == "adapter" && ! -d "$ADAPTER_PATH" ]]; then
   echo "Adapter path does not exist: $ADAPTER_PATH" >&2
   exit 1
 fi
-"$PYTHON_BIN" try_ticket_agent/flowgrpo_general_2x40g/eval_ticket_agent.py \
-  --config "$CONFIG_FILE" --eval-mode "$EVAL_MODE" --adapter-path "$ADAPTER_PATH"
+ARGS=(--config "$CONFIG_FILE" --eval-mode "$EVAL_MODE" --adapter-path "$ADAPTER_PATH")
+if [[ -n "${OUTPUT_DIR:-}" ]]; then
+  ARGS+=(--output-dir "$OUTPUT_DIR")
+fi
+"$PYTHON_BIN" try_ticket_agent/flowgrpo_general_2x40g/eval_ticket_agent.py "${ARGS[@]}"

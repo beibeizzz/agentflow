@@ -49,6 +49,20 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, float | int]:
     return summary
 
 
+def resolve_output_dir(
+    config: dict[str, Any],
+    *,
+    mode: str,
+    explicit_output_dir: Path | None,
+) -> Path:
+    if explicit_output_dir is not None:
+        return explicit_output_dir
+    base = Path("try_ticket_agent/flowgrpo_general_2x40g/outputs")
+    if mode == "baseline":
+        return base / "eval_baseline"
+    return Path(config_value(config, "output_dir", str(base / "eval_adapter")))
+
+
 def _adapter_record(row: dict[str, Any], rollout: Any) -> dict[str, Any]:
     verification = None
     if rollout.valid_for_training:
@@ -94,6 +108,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--eval-mode", choices=["baseline", "adapter"], default=None)
     parser.add_argument("--adapter-path", default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
     return parser.parse_args(argv)
 
 
@@ -105,7 +120,7 @@ def main(argv: list[str] | None = None) -> None:
     frozen_model = str(config_value(config, "frozen_model", "Qwen3-0.6B"))
     base_url = str(config_value(config, "frozen_base_url", "http://127.0.0.1:8000/v1"))
     eval_file = Path(config_value(config, "eval_file", "try_ticket_agent/data/generated/test.jsonl"))
-    output_dir = Path(config_value(config, "output_dir", f"try_ticket_agent/outputs/eval_{mode}"))
+    output_dir = resolve_output_dir(config, mode=mode, explicit_output_dir=args.output_dir)
     rows = load_rows(eval_file)[: int(config_value(config, "max_eval_items", 1000000))]
     check_model(base_url, frozen_model)
     closer = None

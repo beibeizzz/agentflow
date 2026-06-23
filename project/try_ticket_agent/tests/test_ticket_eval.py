@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
-from try_ticket_agent.flowgrpo_general_2x40g.eval_ticket_agent import summarize_results
+from try_ticket_agent.flowgrpo_general_2x40g.eval_ticket_agent import resolve_output_dir, summarize_results
 
 
 class TicketEvalTests(unittest.TestCase):
@@ -38,6 +39,26 @@ class TicketEvalTests(unittest.TestCase):
         self.assertEqual(summary["infrastructure_failure_rate"], 1 / 3)
         self.assertEqual(summary["direct_success_rate"], 1 / 2)
         self.assertEqual(summary["indirect_success_rate"], 0.0)
+
+    def test_resolve_output_dir_separates_baseline_and_adapter_defaults(self) -> None:
+        config = {
+            "output_dir": "try_ticket_agent/flowgrpo_general_2x40g/outputs/eval_adapter",
+        }
+        self.assertEqual(
+            resolve_output_dir(config, mode="baseline", explicit_output_dir=None),
+            Path("try_ticket_agent/flowgrpo_general_2x40g/outputs/eval_baseline"),
+        )
+        self.assertEqual(
+            resolve_output_dir(config, mode="adapter", explicit_output_dir=None),
+            Path("try_ticket_agent/flowgrpo_general_2x40g/outputs/eval_adapter"),
+        )
+
+    def test_resolve_output_dir_honors_explicit_override(self) -> None:
+        config = {"output_dir": "configured/adapter"}
+        self.assertEqual(
+            resolve_output_dir(config, mode="baseline", explicit_output_dir=Path("manual/out")),
+            Path("manual/out"),
+        )
 
 
 if __name__ == "__main__":

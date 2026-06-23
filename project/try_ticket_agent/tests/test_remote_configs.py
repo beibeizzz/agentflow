@@ -128,6 +128,12 @@ class RemoteConfigTests(unittest.TestCase):
         self.assertIn("config_agentflow_baseline.yaml", baseline_script)
         self.assertIn("--config", baseline_script)
 
+    def test_eval_script_supports_explicit_output_dir_without_forcing_shared_default(self) -> None:
+        eval_script = ROOT / "flowgrpo_general_2x40g" / "run_eval_learnable_general_2x40g.sh"
+        text = eval_script.read_text(encoding="utf-8")
+        self.assertIn("OUTPUT_DIR", text)
+        self.assertIn("--output-dir", text)
+
     def test_ticket_experiment_has_no_sft_configuration(self) -> None:
         for path in ROOT.rglob("*"):
             if path.is_file() and "tests" not in path.parts and path.suffix in {".yaml", ".sh", ".py"}:
