@@ -64,6 +64,25 @@ class SynthesisPipelineTests(unittest.TestCase):
         result = validate_candidate(blueprint, request)
         self.assertIn("introduced_enum", result.codes)
 
+    def test_validator_allows_field_reference_without_assignment_enum_capture(self) -> None:
+        blueprint = generate_blueprint(seed=42, split="train", index=2)
+        target_id = blueprint.goal_spec["target_ticket_id"]
+        value = blueprint.goal_spec["value"]
+        request = (
+            f"For ticket {target_id}, update the status of the ticket so it becomes {value}, "
+            "then finish the request."
+        )
+        result = validate_candidate(blueprint, request)
+        self.assertNotIn("introduced_enum", result.codes)
+        self.assertTrue(result.ok, result.messages)
+
+    def test_validator_still_rejects_explicit_unsupported_assignment_enum(self) -> None:
+        blueprint = generate_blueprint(seed=42, split="train", index=2)
+        target_id = blueprint.goal_spec["target_ticket_id"]
+        request = f"For ticket {target_id}, set status to pending, then finish the request."
+        result = validate_candidate(blueprint, request)
+        self.assertIn("introduced_enum", result.codes)
+
     def test_pipeline_retries_with_feedback_and_resumes_without_api_calls(self) -> None:
         blueprint = generate_blueprint(seed=42, split="train", index=0)
         bad = {"user_request": blueprint.canonical_request + " Also set status to resolved."}

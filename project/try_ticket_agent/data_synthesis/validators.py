@@ -78,9 +78,9 @@ def validate_candidate(blueprint: EpisodeBlueprint, user_request: str) -> Candid
         "status": {"open", "in_progress", "resolved", "closed"},
     }
     patterns = {
-        "priority": r"priority(?:\s+as|\s+to|\s+is)?\s+([a-z_]+)",
-        "assigned_team": r"(?:assigned_team|assigned team|team)(?:\s+as|\s+to|\s+is)?\s+([a-z_]+)",
-        "status": r"status(?:\s+as|\s+to|\s+is)?\s+([a-z_]+)",
+        "priority": r"(?:set|change|make|mark|update)?\s*priority\s+(?:to|as|is|becomes?)\s+([a-z_]+)",
+        "assigned_team": r"(?:set|change|make|mark|update)?\s*(?:assigned_team|assigned team|team)\s+(?:to|as|is|becomes?)\s+([a-z_]+)",
+        "status": r"(?:set|change|make|mark|update)?\s*status\s+(?:to|as|is|becomes?)\s+([a-z_]+)",
     }
     observed_values = re.findall(patterns[field], lowered)
     if any(value not in enum_values[field] for value in observed_values):
