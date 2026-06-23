@@ -37,7 +37,8 @@ def build_judge_messages(source: dict[str, Any], user_request: str) -> list[dict
             "content": (
                 "Judge whether the rewritten request preserves exactly one intended ticket mutation, "
                 "the required lookup information, and the completion intent without exposing hidden "
-                "state or tool instructions. Return exactly the accepted boolean and reasons string-list keys."
+                "state or tool instructions. Return exactly one JSON object with only the accepted "
+                "boolean and reasons string-list keys."
             ),
         },
         {

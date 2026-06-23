@@ -59,6 +59,8 @@ class SynthesisClientTests(unittest.TestCase):
         self.assertEqual(call["model"], "deepseek-v4-pro")
         self.assertEqual(call["reasoning_effort"], "high")
         self.assertEqual(call["extra_body"], {"thinking": {"type": "enabled"}})
+        messages_text = "\n".join(message["content"] for message in call["messages"])
+        self.assertIn("json", messages_text.lower())
 
     def test_transport_empty_and_truncated_responses_retry_and_accumulate_usage(self) -> None:
         sdk = FakeSdk(
