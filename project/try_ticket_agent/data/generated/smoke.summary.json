@@ -1,0 +1,12 @@
+{
+  "acceptance_rate": 0.8125,
+  "accepted": 26,
+  "api_calls": 64,
+  "processed": 32,
+  "rejected": 6,
+  "usage": {
+    "completion_tokens": 10728,
+    "prompt_tokens": 61122,
+    "total_tokens": 71850
+  }
+}

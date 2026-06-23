@@ -1,0 +1,70 @@
+{
+  "counts": {
+    "smoke": 26,
+    "test": 390,
+    "train": 1932,
+    "validation": 192
+  },
+  "sha256": {
+    "smoke": "7753903b13b9667071a3379fdbbaadabf1ad374137a2c6a53c961a83770c053f",
+    "test": "0b518660d6f7fa14c22110d43308bb1e742747faf86f9aa0106cc88ece9fbc83",
+    "train": "9dbde82ca0288ddb8b78300bd6d615e6b2247a04d9a9af5581980681f74d1c5e",
+    "validation": "7e13a64b1390dfc178861356b9c9f11f85eaa1a22c03df2d405853034388621e"
+  },
+  "splits": [
+    "smoke",
+    "train",
+    "validation",
+    "test"
+  ],
+  "summaries": {
+    "smoke": {
+      "acceptance_rate": 0.8125,
+      "accepted": 26,
+      "api_calls": 64,
+      "processed": 32,
+      "rejected": 6,
+      "usage": {
+        "completion_tokens": 10728,
+        "prompt_tokens": 61122,
+        "total_tokens": 71850
+      }
+    },
+    "test": {
+      "acceptance_rate": 0.76171875,
+      "accepted": 390,
+      "api_calls": 1157,
+      "processed": 512,
+      "rejected": 122,
+      "usage": {
+        "completion_tokens": 149854,
+        "prompt_tokens": 1009493,
+        "total_tokens": 1159347
+      }
+    },
+    "train": {
+      "acceptance_rate": 0.7728,
+      "accepted": 1932,
+      "api_calls": 5596,
+      "processed": 2500,
+      "rejected": 568,
+      "usage": {
+        "completion_tokens": 749598,
+        "prompt_tokens": 4822210,
+        "total_tokens": 5571808
+      }
+    },
+    "validation": {
+      "acceptance_rate": 0.75,
+      "accepted": 192,
+      "api_calls": 581,
+      "processed": 256,
+      "rejected": 64,
+      "usage": {
+        "completion_tokens": 75518,
+        "prompt_tokens": 501748,
+        "total_tokens": 577266
+      }
+    }
+  }
+}

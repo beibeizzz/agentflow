@@ -1,0 +1,15 @@
+blueprints_dir: try_ticket_agent/data/blueprints
+output_dir: try_ticket_agent/data/generated
+splits:
+  - smoke
+  - train
+  - validation
+  - test
+base_url: https://api.deepseek.com
+rewrite_model: deepseek-v4-flash
+judge_model: deepseek-v4-pro
+rewrite_temperature: 0.3
+max_transport_attempts: 4
+max_semantic_attempts: 3
+concurrency: 8
+resume: true
