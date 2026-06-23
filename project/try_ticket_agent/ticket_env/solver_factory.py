@@ -28,18 +28,27 @@ Request: {question}
 Plan: {query_analysis}
 Previous steps: {memory_actions}
 
-Return one JSON object only.
+Choose exactly one tool.
+Return exactly one JSON object with exactly these top-level keys:
+{{
+  "tool_name": "Ticket_Query_Tool | Ticket_Update_Tool | Ticket_Finish_Tool",
+  "arguments": {{}}
+}}
 
-Formats:
-- Ticket_Query_Tool arguments: lookup_by, value.
-- Ticket_Update_Tool arguments: ticket_id, field, value.
-- Ticket_Finish_Tool arguments: ticket_id, outcome completed.
+Do not output multiple tools.
+Do not use tool names as top-level keys.
+Do not output markdown or prose.
+
+Argument formats:
+- Ticket_Query_Tool: {{"lookup_by": "ticket_id|customer_id|order_id", "value": "..."}}
+- Ticket_Update_Tool: {{"ticket_id": "...", "field": "priority|assigned_team|status", "value": "..."}}
+- Ticket_Finish_Tool: {{"ticket_id": "...", "outcome": "completed"}}
 
 Rules:
-- If no previous step and request has ticket_id: update ticket_id, field, value.
-- If no previous step and request has customer_id or order_id: query lookup_by and value.
-- If query OK: update data.ticket_id with field and value.
-- If update OK: finish same ticket_id with outcome completed.
+- If no previous step and request has ticket_id: use Ticket_Update_Tool.
+- If no previous step and request has customer_id or order_id: use Ticket_Query_Tool.
+- If query OK: use Ticket_Update_Tool with result data.ticket_id.
+- If update OK: use Ticket_Finish_Tool with same ticket_id and outcome completed.
 - Never repeat an OK query or OK update.
 """
 
