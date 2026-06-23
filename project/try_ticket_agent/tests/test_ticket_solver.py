@@ -200,6 +200,10 @@ class TicketSolverTests(unittest.TestCase):
         prompt = str(config["prompt_template"])
 
         self.assertIn("next ticket action", prompt.lower())
+        self.assertIn("tool_name", prompt)
+        self.assertIn("exactly these top-level", prompt.lower())
+        self.assertIn("choose exactly one tool", prompt.lower())
+        self.assertIn("do not use tool names as top-level keys", prompt.lower())
         self.assertIn("Ticket_Query_Tool", prompt)
         self.assertIn("Ticket_Update_Tool", prompt)
         self.assertIn("Ticket_Finish_Tool", prompt)
