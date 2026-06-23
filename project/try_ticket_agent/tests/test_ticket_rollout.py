@@ -90,6 +90,78 @@ class TicketRolloutHookTests(unittest.TestCase):
             self.assertEqual(result["question"], row["user_request"])
             self.assertEqual(samples[0].response_token_ids, [201, 202])
 
+    def test_question_getter_failure_returns_invalid_rollout_without_aborting_group(self) -> None:
+        class FakeSolver:
+            def __init__(self):
+                self.planner = types.SimpleNamespace(llm_engine=None)
+
+            def solve(self, question):
+                raise AssertionError("solve must not run when question getter fails")
+
+        runner = AgentFlowBatchRolloutRunner(
+            policy=ExactIdPolicy(),
+            solver_factory=FakeSolver,
+            reset_solver=lambda solver, row: None,
+            question_getter=lambda row: (_ for _ in ()).throw(KeyError("user_request")),
+            rollout_concurrency=2,
+            planner_batch_size=2,
+        )
+        try:
+            groups = runner.run_batch([{"episode_id": "ticket-tr-000001"}], group_size=2)
+        finally:
+            runner.close()
+
+        self.assertEqual(len(groups[0]), 2)
+        self.assertTrue(all(item.reward == 0.0 for item in groups[0]))
+        self.assertTrue(all(item.valid_for_training is False for item in groups[0]))
+        self.assertTrue(all("KeyError" in item.errors[0] for item in groups[0]))
+
+    def test_reset_failure_returns_invalid_rollout_without_aborting_other_rows(self) -> None:
+        class FakeSolver:
+            def __init__(self):
+                self.planner = types.SimpleNamespace(llm_engine=None)
+
+            def solve(self, question):
+                self.planner.llm_engine("ticket planner prompt", system_prompt="planner system")
+                return {"question": question}
+
+        def reset_solver(solver, row):
+            if row["episode_id"] == "bad":
+                raise RuntimeError("reset failed")
+
+        def adapt(solver, row, result, samples):
+            return RolloutResult(
+                reward=1.0,
+                answer=row["episode_id"],
+                samples=list(samples),
+                memory={},
+                valid_for_training=True,
+            )
+
+        runner = AgentFlowBatchRolloutRunner(
+            policy=ExactIdPolicy(),
+            solver_factory=FakeSolver,
+            reset_solver=reset_solver,
+            result_adapter=adapt,
+            question_getter=lambda row: row["user_request"],
+            rollout_concurrency=2,
+            planner_batch_size=2,
+        )
+        rows = [
+            {"episode_id": "bad", "user_request": "bad request"},
+            {"episode_id": "good", "user_request": "good request"},
+        ]
+        try:
+            groups = runner.run_batch(rows, group_size=1)
+        finally:
+            runner.close()
+
+        self.assertEqual(groups[0][0].valid_for_training, False)
+        self.assertIn("RuntimeError: reset failed", groups[0][0].errors)
+        self.assertEqual(groups[1][0].valid_for_training, True)
+        self.assertEqual(groups[1][0].reward, 1.0)
+        self.assertEqual(groups[1][0].samples[0].response_token_ids, [201, 202])
+
 
 if __name__ == "__main__":
     unittest.main()

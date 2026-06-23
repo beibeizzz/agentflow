@@ -300,11 +300,11 @@ class AgentFlowRolloutWorker:
     def run(self, row: dict[str, Any]) -> RolloutResult:
         from flowgrpo.reward import compute_result_reward
 
-        question = str(self.question_getter(row))
-        gold_answer = str(row.get("result") or row.get("gold_answer") or row.get("extra_info", {}).get("gold_answer"))
-        _call_reset_solver(self.reset_solver, self.solver, row)
-        self.policy_engine.clear()
         try:
+            question = str(self.question_getter(row))
+            gold_answer = str(row.get("result") or row.get("gold_answer") or row.get("extra_info", {}).get("gold_answer"))
+            _call_reset_solver(self.reset_solver, self.solver, row)
+            self.policy_engine.clear()
             result = self.solver.solve(question)
             if self.result_adapter is not None:
                 return self.result_adapter(
