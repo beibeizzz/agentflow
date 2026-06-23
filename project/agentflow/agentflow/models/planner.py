@@ -87,9 +87,9 @@ class Planner:
     def analyze_query(self, question: str, image: str, json_data: Any = None) -> str:
         image_info = self.get_image_info(image)
         calculator_only = self.available_tools == ["Calculator_Tool"]
-        query_config = self._generation_config("query_analysis") if calculator_only else {}
+        query_config = self._generation_config("query_analysis")
 
-        if calculator_only and query_config.get("enabled") is False:
+        if query_config.get("enabled") is False:
             self.query_analysis = ""
             if json_data is not None:
                 json_data["query_analysis_disabled"] = True
@@ -97,7 +97,15 @@ class Planner:
                 json_data["query_analysis_system_prompt"] = query_config.get("system_prompt")
             return ""
 
-        if self.is_multimodal:
+        prompt_template = query_config.get("prompt_template")
+        if prompt_template:
+            query_prompt = str(prompt_template).format(
+                question=question,
+                available_tools=self.available_tools,
+                tool_metadata=self.toolbox_metadata,
+                image_info=image_info,
+            )
+        elif self.is_multimodal:
             query_prompt = f"""
 Task: Analyze the given query with accompanying inputs and determine the skills and tools needed to address it effectively.
 
@@ -208,19 +216,20 @@ Problem:
                 "top_p": 0.95,
                 "frequency_penalty": 0,
             })
-            query_kwargs.update(
-                {
-                    key: value
-                    for key, value in query_config.items()
-                    if key != "enabled"
-                }
-            )
+        query_kwargs.update(
+            {
+                key: value
+                for key, value in query_config.items()
+                if key not in {"enabled", "prompt_template"}
+            }
+        )
         query_think_mode = getattr(self, "query_analysis_think_mode", getattr(self, "think_mode", "default"))
         if query_think_mode != "default":
             query_kwargs["think_mode"] = query_think_mode
         if json_data is not None:
             json_data["query_analysis_prompt"] = input_data
             json_data["query_analysis_system_prompt"] = query_kwargs.get("system_prompt")
+            json_data["query_analysis_think_mode"] = query_kwargs.get("think_mode", "default")
         self.query_analysis = self.llm_engine_fixed(input_data, **query_kwargs)
 
         return str(self.query_analysis).strip()
@@ -313,7 +322,14 @@ Problem:
             if isinstance(response, StructuredToolAction):
                 action = response
             elif isinstance(response, str):
-                payload = json.loads(response.strip())
+                text = response.strip()
+                if text.startswith("<think>"):
+                    think_end = text.find("</think>")
+                    if think_end != -1:
+                        text = text[think_end + len("</think>"):].strip()
+                text = re.sub(r"^```(?:json)?\s*", "", text)
+                text = re.sub(r"\s*```$", "", text).strip()
+                payload = json.loads(text)
                 if not isinstance(payload, dict) or set(payload) != {"tool_name", "arguments"}:
                     return None, None, None
                 if hasattr(StructuredToolAction, "model_validate"):
@@ -441,7 +457,7 @@ Memory: {memory.get_actions()}
 Rules:
 - Return only one JSON object.
 - "Sub_goal": briefly say what this calculation computes.
-- "Calculation": write only the arithmetic expression and must match this regex: ^[0-9+\-*/(). ]+$
+- "Calculation": write only the arithmetic expression and must match this regex: ^[0-9+\\-*/(). ]+$
 - In calculation, use only digits, +, -, *, /, parentheses, and decimals.
 - In calculation, do not include variables, words, units, "=", , currency symbols, commas, explanatory text, or the result.
 

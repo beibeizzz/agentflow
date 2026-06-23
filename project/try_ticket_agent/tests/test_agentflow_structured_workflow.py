@@ -133,13 +133,53 @@ class StructuredPlannerTests(unittest.TestCase):
     def test_structured_extraction_rejects_wrappers_and_extra_keys(self) -> None:
         planner = make_planner(action_mode="structured")
         invalid = [
-            '```json\n{"tool_name":"Ticket_Finish_Tool","arguments":{}}\n```',
             '{"tool_name":"Ticket_Finish_Tool","arguments":{},"extra":1}',
             '[{"tool_name":"Ticket_Finish_Tool","arguments":{}}]',
         ]
         for response in invalid:
             with self.subTest(response=response):
                 self.assertEqual(planner.extract_context_subgoal_and_tool(response), (None, None, None))
+
+    def test_structured_extraction_accepts_fenced_json_from_small_model(self) -> None:
+        planner = make_planner(action_mode="structured")
+        result = planner.extract_context_subgoal_and_tool(
+            '```json\n'
+            '{"tool_name":"Ticket_Finish_Tool","arguments":{"ticket_id":"T-1","outcome":"completed"}}\n'
+            '```'
+        )
+        self.assertEqual(
+            result,
+            (
+                '{"outcome":"completed","ticket_id":"T-1"}',
+                "Execute Ticket_Finish_Tool",
+                "Ticket_Finish_Tool",
+            ),
+        )
+
+    def test_non_calculator_query_analysis_uses_prompt_template_override(self) -> None:
+        planner = make_planner(action_mode="structured")
+        planner.llm_engine_fixed = RecordingEngine("ticket plan")
+        planner.query_analysis_think_mode = "on"
+        planner.generation_configs = {
+            "query_analysis": {
+                "prompt_template": "Plan ticket request: {question}\nTools: {available_tools}",
+                "max_tokens": 192,
+                "temperature": 0.0,
+            }
+        }
+        json_data: dict[str, object] = {}
+
+        result = planner.analyze_query("Update ticket T-1", None, json_data=json_data)
+
+        self.assertEqual(result, "ticket plan")
+        prompt, kwargs = planner.llm_engine_fixed.calls[0]
+        self.assertIn("Plan ticket request: Update ticket T-1", str(prompt))
+        self.assertIn("Ticket_Update_Tool", str(prompt))
+        self.assertNotIn("GSM8K", str(prompt))
+        self.assertNotIn("<answer>", str(prompt))
+        self.assertEqual(kwargs["max_tokens"], 192)
+        self.assertEqual(kwargs["temperature"], 0.0)
+        self.assertEqual(json_data["query_analysis_think_mode"], "on")
 
     def test_structured_generation_uses_action_schema(self) -> None:
         planner = make_planner(action_mode="structured")

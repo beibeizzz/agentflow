@@ -5,8 +5,8 @@ frozen_base_url: http://127.0.0.1:8000/v1
 eval_file: try_ticket_agent/data/generated/test.jsonl
 output_dir: try_ticket_agent/baseline/outputs/test
 temperature: 0.0
-think_mode: off
-query_analysis_think_mode: on
+think_mode: "off"
+query_analysis_think_mode: "on"
 max_steps: 3
 max_time: 120
 max_tokens: 512

@@ -127,6 +127,7 @@ class RemoteConfigTests(unittest.TestCase):
         self.assertEqual(baseline["planner_action_mode"], "structured")
         self.assertEqual(baseline["executor_mode"], "structured")
         self.assertEqual(baseline["output_types"], "workflow")
+        self.assertEqual(baseline["query_analysis_think_mode"], "on")
         self.assertEqual(evaluation["output_types"], "workflow")
         baseline_script = BASELINE_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("config_agentflow_baseline.yaml", baseline_script)
