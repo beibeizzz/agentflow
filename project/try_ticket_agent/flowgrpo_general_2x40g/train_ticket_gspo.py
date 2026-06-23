@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import random
 from pathlib import Path
 import json
@@ -118,6 +119,113 @@ def ticket_result_adapter(
     )
 
 
+def resolve_reward_mode(config: dict[str, Any]) -> str:
+    mode = str(config_value(config, "reward_mode", "binary"))
+    if mode != "binary":
+        raise SystemExit(f"reward_mode must be binary, got: {mode}")
+    return mode
+
+
+def summarize_rewards(reward_groups: list[list[float]]) -> dict[str, float | int]:
+    values = [float(value) for group in reward_groups for value in group]
+    if not values:
+        return {"count": 0, "mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return {
+        "count": len(values),
+        "mean": mean,
+        "std": math.sqrt(variance),
+        "min": min(values),
+        "max": max(values),
+    }
+
+
+def gpu_memory_snapshot(torch_module: Any) -> dict[str, Any]:
+    cuda = getattr(torch_module, "cuda", None)
+    if cuda is None or not cuda.is_available():
+        return {"cuda": False}
+    device = cuda.current_device()
+    return {
+        "cuda": True,
+        "device": int(device),
+        "allocated": int(cuda.memory_allocated(device)),
+        "reserved": int(cuda.memory_reserved(device)),
+        "max_allocated": int(cuda.max_memory_allocated(device)),
+        "max_reserved": int(cuda.max_memory_reserved(device)),
+    }
+
+
+def build_training_record(
+    *,
+    step: int,
+    epoch: int,
+    row_index: int,
+    batch: list[dict[str, Any]],
+    groups: list[list[RolloutResult]],
+    rollouts: list[RolloutResult],
+    advantages: list[float],
+    reward_groups: list[list[float]],
+    advantage_groups: list[list[float | None]],
+    stats: dict[str, Any],
+    clip_low: float,
+    clip_high: float,
+    policy_epochs: int,
+    step_elapsed_s: float,
+    rollout_elapsed_s: float,
+    train_elapsed_s: float,
+    gpu_memory: dict[str, Any],
+) -> dict[str, Any]:
+    flat_group = [item for group in groups for item in group]
+    reward_summary = summarize_rewards(reward_groups)
+    token_count = sum(
+        len(sample.response_token_ids or []) for rollout in rollouts for sample in rollout.samples
+    )
+    return {
+        "step": step,
+        "epoch": epoch,
+        "row_index": row_index,
+        "episode_ids": [row["episode_id"] for row in batch],
+        "reward_groups": reward_groups,
+        "advantage_groups": advantage_groups,
+        "reward_count": reward_summary["count"],
+        "reward_mean": reward_summary["mean"],
+        "reward_std": reward_summary["std"],
+        "reward_min": reward_summary["min"],
+        "reward_max": reward_summary["max"],
+        "valid_rollout_count": len(rollouts),
+        "infrastructure_failure_count": len(flat_group) - len(rollouts),
+        "invalid_rollout_count": len(flat_group) - len(rollouts),
+        "nonzero_trajectory_count": sum(abs(value) >= 1e-8 for value in advantages),
+        "nonzero_turn_count": sum(
+            len(rollout.samples)
+            for rollout, advantage in zip(rollouts, advantages, strict=True)
+            if abs(advantage) >= 1e-8
+        ),
+        "response_token_count": token_count,
+        "token_count": token_count,
+        "zero_variance_group_count": sum(
+            all(value is None or abs(value) < 1e-8 for value in group)
+            for group in advantage_groups
+        ),
+        "status": "update" if stats else "skip_no_advantage",
+        "loss": stats.get("loss") if stats else None,
+        "ratio_mean": stats.get("ratio_mean") if stats else None,
+        "ratio_min": stats.get("ratio_min") if stats else None,
+        "ratio_max": stats.get("ratio_max") if stats else None,
+        "clip_fraction": stats.get("clip_fraction") if stats else None,
+        "approx_kl": stats.get("approx_kl") if stats else None,
+        "policy_epochs": policy_epochs,
+        "train_stats": stats,
+        "clip_range_low": clip_low,
+        "clip_range_high": clip_high,
+        "rollout_elapsed_s": round(rollout_elapsed_s, 3),
+        "train_elapsed_s": round(train_elapsed_s, 3),
+        "elapsed_s": round(step_elapsed_s, 3),
+        "gpu_memory": gpu_memory,
+    }
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Ticket AgentFlow binary turn-level GSPO training.")
     parser.add_argument("--config", type=Path, required=True)
@@ -142,6 +250,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     config = load_yaml_config(args.config)
+    resolve_reward_mode(config)
     model_path = str(args.model_path or config_value(config, "model_path", "Qwen/Qwen3-0.6B"))
     train_file = Path(args.train_file or config_value(config, "train_file", "try_ticket_agent/data/generated/train.jsonl"))
     output_dir = Path(args.output_dir or config_value(config, "output_dir", "try_ticket_agent/flowgrpo_general_2x40g/outputs"))
@@ -203,13 +312,17 @@ def main(argv: list[str] | None = None) -> None:
     metrics_path = output_dir / "metrics.jsonl"
     step = 0
     started_at = time.time()
+    policy_epochs = int(args.policy_epochs if args.policy_epochs is not None else config_value(config, "policy_epochs", 2))
     try:
         epochs = int(args.epochs if args.epochs is not None else config_value(config, "epochs", 1))
         for epoch in range(epochs):
             for row_index, batch in iter_batches(rows, question_batch_size):
                 step_started = time.time()
+                rollout_started = time.time()
                 groups = runner.run_batch(batch, group_size=group_size)
+                rollout_elapsed_s = time.time() - rollout_started
                 rollouts, advantages, reward_groups, advantage_groups = flatten_rollout_groups(groups)
+                train_started = time.time()
                 stats = train_step_grpo(
                     policy=policy,
                     optimizer=optimizer,
@@ -219,38 +332,29 @@ def main(argv: list[str] | None = None) -> None:
                     clip_range_high=clip_high,
                     max_grad_norm=float(config_value(config, "max_grad_norm", 1.0)),
                     logprob_micro_batch_size=int(config_value(config, "logprob_micro_batch_size", 8)),
-                    policy_epochs=int(args.policy_epochs if args.policy_epochs is not None else config_value(config, "policy_epochs", 2)),
+                    policy_epochs=policy_epochs,
                 )
+                train_elapsed_s = time.time() - train_started
                 step += 1
-                flat_group = [item for group in groups for item in group]
-                record = {
-                    "step": step,
-                    "epoch": epoch,
-                    "row_index": row_index,
-                    "episode_ids": [row["episode_id"] for row in batch],
-                    "reward_groups": reward_groups,
-                    "advantage_groups": advantage_groups,
-                    "valid_rollout_count": len(rollouts),
-                    "invalid_rollout_count": len(flat_group) - len(rollouts),
-                    "nonzero_trajectory_count": sum(abs(value) >= 1e-8 for value in advantages),
-                    "nonzero_turn_count": sum(
-                        len(rollout.samples)
-                        for rollout, advantage in zip(rollouts, advantages, strict=True)
-                        if abs(advantage) >= 1e-8
-                    ),
-                    "token_count": sum(
-                        len(sample.response_token_ids or []) for rollout in rollouts for sample in rollout.samples
-                    ),
-                    "zero_variance_group_count": sum(
-                        all(value is None or abs(value) < 1e-8 for value in group)
-                        for group in advantage_groups
-                    ),
-                    "status": "update" if stats else "skip_no_advantage",
-                    "train_stats": stats,
-                    "clip_range_low": clip_low,
-                    "clip_range_high": clip_high,
-                    "elapsed_s": round(time.time() - step_started, 3),
-                }
+                record = build_training_record(
+                    step=step,
+                    epoch=epoch,
+                    row_index=row_index,
+                    batch=batch,
+                    groups=groups,
+                    rollouts=rollouts,
+                    advantages=advantages,
+                    reward_groups=reward_groups,
+                    advantage_groups=advantage_groups,
+                    stats=stats,
+                    clip_low=clip_low,
+                    clip_high=clip_high,
+                    policy_epochs=policy_epochs,
+                    step_elapsed_s=time.time() - step_started,
+                    rollout_elapsed_s=rollout_elapsed_s,
+                    train_elapsed_s=train_elapsed_s,
+                    gpu_memory=gpu_memory_snapshot(torch),
+                )
                 append_jsonl(metrics_path, record)
                 if step % int(config_value(config, "save_every", 25)) == 0:
                     policy.save_adapter(str(output_dir / f"checkpoint_step_{step}"))
@@ -260,7 +364,15 @@ def main(argv: list[str] | None = None) -> None:
     policy.save_adapter(str(final_adapter))
     (output_dir / "train_summary.json").write_text(
         json.dumps(
-            {"steps": step, "rows": len(rows), "elapsed_s": round(time.time() - started_at, 3)},
+            {
+                "steps": step,
+                "rows": len(rows),
+                "elapsed_s": round(time.time() - started_at, 3),
+                "final_adapter": str(final_adapter),
+                "clip_range_low": clip_low,
+                "clip_range_high": clip_high,
+                "policy_epochs": policy_epochs,
+            },
             ensure_ascii=False,
             indent=2,
         ),
@@ -271,10 +383,14 @@ def main(argv: list[str] | None = None) -> None:
 __all__ = [
     "DEFAULT_CLIP_RANGE_HIGH",
     "DEFAULT_CLIP_RANGE_LOW",
+    "build_training_record",
     "build_loss_items",
     "bind_ticket_runtime",
     "flatten_rollout_groups",
+    "gpu_memory_snapshot",
+    "resolve_reward_mode",
     "reset_ticket_solver",
+    "summarize_rewards",
     "ticket_result_adapter",
     "train_step_grpo",
 ]

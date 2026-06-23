@@ -18,10 +18,14 @@ from try_ticket_agent.ticket_env.verifier import TicketVerifier
 from try_ticket_agent.flowgrpo_general_2x40g.train_ticket_gspo import (
     DEFAULT_CLIP_RANGE_HIGH,
     DEFAULT_CLIP_RANGE_LOW,
+    build_training_record,
     build_loss_items,
     bind_ticket_runtime,
     flatten_rollout_groups,
+    gpu_memory_snapshot,
+    resolve_reward_mode,
     reset_ticket_solver,
+    summarize_rewards,
     ticket_result_adapter,
 )
 
@@ -78,6 +82,72 @@ class TicketGspoTests(unittest.TestCase):
 
     def test_ticket_training_uses_required_asymmetric_clip_defaults(self) -> None:
         self.assertEqual((DEFAULT_CLIP_RANGE_LOW, DEFAULT_CLIP_RANGE_HIGH), (0.001, 0.003))
+
+    def test_reward_mode_must_be_binary(self) -> None:
+        self.assertEqual(resolve_reward_mode({"reward_mode": "binary"}), "binary")
+        with self.assertRaisesRegex(SystemExit, "reward_mode must be binary"):
+            resolve_reward_mode({"reward_mode": "dense"})
+
+    def test_summarize_rewards_uses_population_statistics(self) -> None:
+        summary = summarize_rewards([[1.0, 0.0], [0.0, 1.0]])
+        self.assertEqual(summary["count"], 4)
+        self.assertEqual(summary["mean"], 0.5)
+        self.assertEqual(summary["min"], 0.0)
+        self.assertEqual(summary["max"], 1.0)
+        self.assertEqual(summary["std"], 0.5)
+
+    def test_gpu_memory_snapshot_handles_cpu_only_torch(self) -> None:
+        class FakeCuda:
+            @staticmethod
+            def is_available():
+                return False
+
+        fake_torch = types.SimpleNamespace(cuda=FakeCuda())
+        self.assertEqual(gpu_memory_snapshot(fake_torch), {"cuda": False})
+
+    def test_training_record_exposes_remote_diagnostics_at_top_level(self) -> None:
+        groups = [[rollout(1.0, 2), rollout(0.0, 1), rollout(0.0, 1, valid=False)]]
+        flat, advantages, reward_groups, advantage_groups = flatten_rollout_groups(groups)
+        record = build_training_record(
+            step=1,
+            epoch=0,
+            row_index=0,
+            batch=[{"episode_id": "ticket-tr-000001"}],
+            groups=groups,
+            rollouts=flat,
+            advantages=advantages,
+            reward_groups=reward_groups,
+            advantage_groups=advantage_groups,
+            stats={
+                "loss": 0.25,
+                "ratio_mean": 1.001,
+                "ratio_min": 0.999,
+                "ratio_max": 1.004,
+                "clip_fraction": 0.125,
+                "approx_kl": 0.002,
+            },
+            clip_low=0.001,
+            clip_high=0.003,
+            policy_epochs=2,
+            step_elapsed_s=1.25,
+            rollout_elapsed_s=0.75,
+            train_elapsed_s=0.5,
+            gpu_memory={"cuda": False},
+        )
+        self.assertEqual(record["status"], "update")
+        self.assertEqual(record["reward_count"], 3)
+        self.assertEqual(record["reward_mean"], 1 / 3)
+        self.assertIn("reward_std", record)
+        self.assertEqual(record["valid_rollout_count"], 2)
+        self.assertEqual(record["infrastructure_failure_count"], 1)
+        self.assertEqual(record["response_token_count"], 6)
+        self.assertEqual(record["policy_epochs"], 2)
+        self.assertEqual(record["loss"], 0.25)
+        self.assertEqual(record["ratio_mean"], 1.001)
+        self.assertEqual(record["clip_fraction"], 0.125)
+        self.assertEqual(record["approx_kl"], 0.002)
+        self.assertEqual(record["gpu_memory"], {"cuda": False})
+        self.assertIn("train_stats", record)
 
     def test_ticket_hooks_reset_hidden_state_and_emit_binary_reward(self) -> None:
         blueprint = generate_blueprint(seed=42, split="train", index=0)
