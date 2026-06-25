@@ -111,6 +111,18 @@ python -m unittest discover try_ticket_agent/tests
 python -m unittest discover try_gsm8k_0522/tests
 ```
 
+## License and Attribution
+
+This repository is based on [lupantech/AgentFlow](https://github.com/lupantech/AgentFlow), which is licensed under the MIT License.
+
+Original AgentFlow copyright:
+
+```text
+Copyright (c) 2025 the AgentFlow Team
+```
+
+This repository preserves the upstream MIT license notice and adds experimental code for GSM8K and ticket-agent GSPO workflows. Additional modifications are licensed under the same MIT License unless a file states otherwise. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md) for details.
+
 ## 注意事项
 
 - ticket 任务是沙盒环境，不连接真实工单系统，不包含真实客户或订单数据。
