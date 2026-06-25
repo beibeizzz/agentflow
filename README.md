@@ -31,11 +31,9 @@ reward 使用 verifier 根据最终状态、提交结果和步数约束做确定
 
 ## 思路
 
-本项目的核心思路是把 AgentFlow 的完整多步交互保留下来，只训练 planner next step，而不是绕过 AgentFlow 直接训练最终答案。
-
 训练时对同一个 query 采样多条 rollout，形成 group。每条 rollout 得到一个任务级 reward。组内 reward 标准化后得到 rollout-level advantage，再复制到该 rollout 的每个 planner turn。这样保留了 AgentFlow 的多步结构，同时让每轮 planner 输出都能参与 token-level policy update。
 
-当前 ticket 任务面向 Qwen3-0.6B 这类小模型设计，因此工具数、流程长度和 prompt 信息量都被控制在较小范围内。工程上优先保证任务可验证、采样可并发、失败模式可分析，而不是追求复杂业务流程。
+当前 ticket 任务面向 Qwen3-0.6B 这类小模型设计，因此工具数、流程长度和 prompt 信息量都被控制在较小范围内。工程上优先保证任务可验证、采样可并发、失败模式可分析。
 
 ## 工程实现
 
@@ -115,7 +113,5 @@ python -m unittest discover try_gsm8k_0522/tests
 
 ## 注意事项
 
-- `docs/` 和 `local_model/` 不作为远程仓库内容维护。
-- 大模型权重、训练输出、baseline 输出和 smoke 临时结果应放在本地路径或被 `.gitignore` 忽略。
 - ticket 任务是沙盒环境，不连接真实工单系统，不包含真实客户或订单数据。
 - 小模型实验对 prompt 长度、工具 schema 和采样温度较敏感，建议同时查看 rollout details 与 metrics，而不是只看最终准确率。
