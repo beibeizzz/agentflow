@@ -121,10 +121,6 @@ python -m unittest discover try_ticket_agent/tests
 python -m unittest discover try_gsm8k_0522/tests
 ```
 
-## 数据来源
-
-本项目的数据来源和生成方式见 [DATA_SOURCES.md](DATA_SOURCES.md)。简要说明：GSM8K 实验数据来自 GSM8K 及本地预处理/改写流程；ticket-agent 数据是纯合成沙盒数据，不包含真实客户、订单或工单记录。
-
 ## License and Attribution
 
 This repository is based on [lupantech/AgentFlow](https://github.com/lupantech/AgentFlow), which is licensed under the MIT License.
@@ -141,3 +137,7 @@ This repository preserves the upstream MIT license notice and adds experimental 
 
 - ticket 任务是沙盒环境，不连接真实工单系统，不包含真实客户或订单数据。
 - 小模型实验对 prompt 长度、工具 schema 和采样温度较敏感，建议同时查看 rollout details 与 metrics，而不是只看最终准确率。
+
+## 数据来源
+
+本项目的数据来源和生成方式见 [DATA_SOURCES.md](DATA_SOURCES.md)。简要说明：GSM8K 实验数据来自 GSM8K 及本地预处理/改写流程；ticket-agent 数据是纯合成沙盒数据，不包含真实客户、订单或工单记录。
