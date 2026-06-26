@@ -1,9 +1,7 @@
 import json
-import os
 import re
 from typing import Any, Dict, List, Tuple
 
-from PIL import Image
 
 from agentflow.engine.factory import create_llm_engine
 from agentflow.models.formatters import NextStep, QueryAnalysis, StructuredToolAction
@@ -30,12 +28,10 @@ class Planner:
             raise ValueError(f"Unsupported Planner action_mode: {action_mode}")
         self.llm_engine_name = llm_engine_name
         self.llm_engine_fixed_name = llm_engine_fixed_name
-        self.is_multimodal = is_multimodal
         self.think_mode = think_mode
         self.query_analysis_think_mode = query_analysis_think_mode or think_mode
         self.final_output_think_mode = final_output_think_mode or think_mode
         self.action_mode = action_mode
-        # self.llm_engine_mm = create_llm_engine(model_string=llm_engine_name, is_multimodal=False, base_url=base_url, temperature = temperature)
         self.llm_engine_fixed = create_llm_engine(model_string=llm_engine_fixed_name, is_multimodal=False, temperature = temperature, think_mode=think_mode)
         self.llm_engine = create_llm_engine(model_string=llm_engine_name, is_multimodal=False, base_url=base_url, temperature = temperature, think_mode=think_mode)
         self.toolbox_metadata = toolbox_metadata if toolbox_metadata is not None else {}
@@ -57,42 +53,13 @@ class Planner:
             return text[think_end + len("</think>"):].strip() if think_end != -1 else ""
         return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
-    def get_image_info(self, image_path: str) -> Dict[str, Any]:
-        image_info = {}
-        if image_path and os.path.isfile(image_path):
-            image_info["image_path"] = image_path
-            try:
-                with Image.open(image_path) as img:
-                    width, height = img.size
-                image_info.update({
-                    "width": width,
-                    "height": height
-                })
-            except Exception as e:
-                print(f"Error processing image file: {str(e)}")
-        return image_info
-
     def generate_base_response(self, question: str, image: str, max_tokens: int = 2048) -> str:
-        image_info = self.get_image_info(image)
-
         input_data = [question]
-        if image_info and "image_path" in image_info:
-            try:
-                with open(image_info["image_path"], 'rb') as file:
-                    image_bytes = file.read()
-                input_data.append(image_bytes)
-            except Exception as e:
-                print(f"Error reading image file: {str(e)}")
-
-
         print("Input data of `generate_base_response()`: ", input_data)
         self.base_response = self.llm_engine(input_data, max_tokens=max_tokens)
-        # self.base_response = self.llm_engine_fixed(input_data, max_tokens=max_tokens)
-
         return self.base_response
 
     def analyze_query(self, question: str, image: str, json_data: Any = None) -> str:
-        image_info = self.get_image_info(image)
         calculator_only = self.available_tools == ["Calculator_Tool"]
         query_config = self._generation_config("query_analysis")
 
@@ -110,35 +77,7 @@ class Planner:
                 question=question,
                 available_tools=self.available_tools,
                 tool_metadata=self.toolbox_metadata,
-                image_info=image_info,
             )
-        elif self.is_multimodal:
-            query_prompt = f"""
-Task: Analyze the given query with accompanying inputs and determine the skills and tools needed to address it effectively.
-
-Available tools: {self.available_tools}
-
-Metadata for the tools: {self.toolbox_metadata}
-
-Image: {image_info}
-
-Query: {question}
-
-Instructions:
-1. Carefully read and understand the query and any accompanying inputs.
-2. Identify the main objectives or tasks within the query.
-3. List the specific skills that would be necessary to address the query comprehensively.
-4. Examine the available tools in the toolbox and determine which ones might relevant and useful for addressing the query. Make sure to consider the user metadata for each tool, including limitations and potential applications (if available).
-5. Provide a brief explanation for each skill and tool you've identified, describing how it would contribute to answering the query.
-
-Your response should include:
-1. A concise summary of the query's main points and objectives, as well as content in any accompanying inputs.
-2. A list of required skills, with a brief explanation for each.
-3. A list of relevant tools from the toolbox, with a brief explanation of how each tool would be utilized and its potential limitations.
-4. Any additional considerations that might be important for addressing the query effectively.
-
-Please present your analysis in a clear, structured format.
-                        """
         elif calculator_only:
             query_prompt = f"""
 Explain the general solution approach step by step and the final goal to the problem in a concise manner, without delving into specific calculations.
@@ -202,17 +141,8 @@ Problem:
 
 
         input_data = [query_prompt]
-        if image_info:
-            try:
-                with open(image_info["image_path"], 'rb') as file:
-                    image_bytes = file.read()
-                input_data.append(image_bytes)
-            except Exception as e:
-                print(f"Error reading image file: {str(e)}")
-
         print("Input data of `analyze_query()`: ", input_data)
 
-        # self.query_analysis = self.llm_engine_mm(input_data, response_format=QueryAnalysis)
         # self.query_analysis = self.llm_engine(input_data, response_format=QueryAnalysis)
         query_kwargs = {"response_format": QueryAnalysis}
         if calculator_only:
@@ -396,77 +326,6 @@ Return exactly one JSON object with exactly these top-level fields:
 
 Do not return markdown, prose, arrays, multiple objects, or unknown fields.
 """
-        elif self.is_multimodal:
-            prompt_generate_next_step = f"""
-Task: Determine the optimal next step to address the given query based on the provided analysis, available tools, and previous steps taken.
-
-Context:
-Query: {question}
-Image: {image}
-Query Analysis: {query_analysis}
-
-Available Tools:
-{self.available_tools}
-
-Tool Metadata:
-{self.toolbox_metadata}
-
-Previous Steps and Their Results:
-{memory.get_actions()}
-
-Current Step: {step_count} in {max_step_count} steps
-Remaining Steps: {max_step_count - step_count}
-
-Instructions:
-1. Analyze the context thoroughly, including the query, its analysis, any image, available tools and their metadata, and previous steps taken.
-
-2. Determine the most appropriate next step by considering:
-- Key objectives from the query analysis
-- Capabilities of available tools
-- Logical progression of problem-solving
-- Outcomes from previous steps
-- Current step count and remaining steps
-
-3. Select ONE tool best suited for the next step, keeping in mind the limited number of remaining steps.
-
-4. Formulate a specific, achievable sub-goal for the selected tool that maximizes progress towards answering the query.
-
-Response Format:
-Your response MUST follow this structure:
-1. Justification: Explain your choice in detail.
-2. Context, Sub-Goal, and Tool: Present the context, sub-goal, and the selected tool ONCE with the following format:
-
-Context: <context>
-Sub-Goal: <sub_goal>
-Tool Name: <tool_name>
-
-Where:
-- <context> MUST include ALL necessary information for the tool to function, structured as follows:
-* Relevant data from previous steps
-* File names or paths created or used in previous steps (list EACH ONE individually)
-* Variable names and their values from previous steps' results
-* Any other context-specific information required by the tool
-- <sub_goal> is a specific, achievable objective for the tool, based on its metadata and previous outcomes.
-It MUST contain any involved data, file names, and variables from Previous Steps and Their Results that the tool can act upon.
-- <tool_name> MUST be the exact name of a tool from the available tools list.
-
-Rules:
-- Select only ONE tool for this step.
-- The sub-goal MUST directly address the query and be achievable by the selected tool.
-- The Context section MUST include ALL necessary information for the tool to function, including ALL relevant file paths, data, and variables from previous steps.
-- The tool name MUST exactly match one from the available tools list: {self.available_tools}.
-- Avoid redundancy by considering previous steps and building on prior results.
-- Your response MUST conclude with the Context, Sub-Goal, and Tool Name sections IN THIS ORDER, presented ONLY ONCE.
-- Include NO content after these three sections.
-
-Example (do not copy, use only as reference):
-Justification: [Your detailed explanation here]
-Context: Image path: "example/image.jpg", Previous detection results: [list of objects]
-Sub-Goal: Detect and count the number of specific objects in the image "example/image.jpg"
-Tool Name: Object_Detector_Tool
-
-Remember: Your response MUST end with the Context, Sub-Goal, and Tool Name sections, with NO additional content afterwards.
-                        """
         elif calculator_only:
             prompt_generate_next_step = f"""
 {self._think_directive()}You should choose the next calculator step and provide the arithmetic expression.
@@ -546,52 +405,8 @@ Rules:
 
 
     def generate_final_output(self, question: str, image: str, memory: Memory, json_data: Any = None) -> str:
-        image_info = self.get_image_info(image)
         calculator_only = self.available_tools == ["Calculator_Tool"]
-        if self.is_multimodal:
-            prompt_generate_final_output = f"""
-Task: Generate the final output based on the query, image, and tools used in the process.
-
-Context:
-Query: {question}
-Image: {image_info}
-Actions Taken:
-{memory.get_actions()}
-
-Instructions:
-1. Review the query, image, and all actions taken during the process.
-2. Consider the results obtained from each tool execution.
-3. Incorporate the relevant information from the memory to generate the step-by-step final output.
-4. The final output should be consistent and coherent using the results from the tools.
-
-Output Structure:
-Your response should be well-organized and include the following sections:
-
-1. Summary:
-   - Provide a brief overview of the query and the main findings.
-
-2. Detailed Analysis:
-   - Break down the process of answering the query step-by-step.
-   - For each step, mention the tool used, its purpose, and the key results obtained.
-   - Explain how each step contributed to addressing the query.
-
-3. Key Findings:
-   - List the most important discoveries or insights gained from the analysis.
-   - Highlight any unexpected or particularly interesting results.
-
-4. Answer to the Query:
-   - Directly address the original question with a clear and concise answer.
-   - If the query has multiple parts, ensure each part is answered separately.
-
-5. Additional Insights (if applicable):
-   - Provide any relevant information or insights that go beyond the direct answer to the query.
-   - Discuss any limitations or areas of uncertainty in the analysis.
-
-6. Conclusion:
-   - Summarize the main points and reinforce the answer to the query.
-   - If appropriate, suggest potential next steps or areas for further investigation.
-"""
-        elif calculator_only:
+        if calculator_only:
                 prompt_generate_final_output = f"""
 Problem:
 {question}
@@ -626,16 +441,6 @@ Instructions:
 """
 
         input_data = [prompt_generate_final_output]
-        if image_info:
-            try:
-                with open(image_info["image_path"], 'rb') as file:
-                    image_bytes = file.read()
-                input_data.append(image_bytes)
-            except Exception as e:
-                print(f"Error reading image file: {str(e)}")
-
-        # final_output = self.llm_engine_mm(input_data)
-        # final_output = self.llm_engine(input_data)
         generation_kwargs = self._generation_config("generator") if calculator_only else {}
         final_think_mode = getattr(self, "final_output_think_mode", getattr(self, "think_mode", "default"))
         if final_think_mode != "default":
@@ -649,23 +454,8 @@ Instructions:
 
 
     def generate_direct_output(self, question: str, image: str, memory: Memory, json_data: Any = None) -> str:
-        image_info = self.get_image_info(image)
         calculator_only = self.available_tools == ["Calculator_Tool"]
-        if self.is_multimodal:
-            prompt_generate_final_output = f"""
-Context:
-Query: {question}
-Image: {image_info}
-Initial Analysis:
-{self.query_analysis}
-Actions Taken:
-{memory.get_actions()}
-
-Please generate the concise output based on the query, image information, initial analysis, and actions taken. Break down the process into clear, logical, and conherent steps. Conclude with a precise and direct answer to the query.
-
-Answer:
-"""
-        elif calculator_only:
+        if calculator_only:
             prompt_generate_final_output = f"""
 Return the final numeric answer based on the comprehensive Analysis and Memory.
 
@@ -702,15 +492,6 @@ Output Structure:
 """
 
         input_data = [prompt_generate_final_output]
-        if image_info:
-            try:
-                with open(image_info["image_path"], 'rb') as file:
-                    image_bytes = file.read()
-                input_data.append(image_bytes)
-            except Exception as e:
-                print(f"Error reading image file: {str(e)}")
-
-        # final_output = self.llm_engine(input_data)
         generation_kwargs = self._generation_config("generator") if calculator_only else {}
         final_think_mode = getattr(self, "final_output_think_mode", getattr(self, "think_mode", "default"))
         if final_think_mode != "default":
@@ -719,6 +500,5 @@ Output Structure:
             json_data["direct_output_prompt"] = input_data
             json_data["direct_output_system_prompt"] = generation_kwargs.get("system_prompt")
         final_output = self.llm_engine_fixed(input_data, **generation_kwargs)
-        # final_output = self.llm_engine_mm(input_data)
 
         return final_output

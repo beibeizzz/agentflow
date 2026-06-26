@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> None:
     config = load_yaml_config(args.config)
 
     model_path = Path(args.model_path or config_value(config, "model_path", "model/Qwen/Qwen3-0.6B"))
-    train_file = Path(args.train_file or config_value(config, "train_file", "try_gsm8k_0522/data/train/gsm8k_smoke_train.parquet"))
+    train_file = Path(args.train_file or config_value(config, "train_file", "try_gsm8k_0522/data/gsm8k_smoke_50.json"))
     output_dir = Path(args.output_dir or config_value(config, "output_dir", "try_gsm8k_0522/flowgrpo_light/outputs/smoke_12g"))
     frozen_base_url = args.frozen_base_url or config_value(config, "frozen_base_url", "http://localhost:8000/v1")
     frozen_model = args.frozen_model or config_value(config, "frozen_model", "Qwen3-0.6B")

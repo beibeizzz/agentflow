@@ -154,7 +154,7 @@ class TestThinkMode(unittest.TestCase):
         script = (Path(__file__).resolve().parents[1] / "run_smoke.sh").read_text(encoding="utf-8")
 
         self.assertIn('QUERY_ANALYSIS_THINK_MODE="${QUERY_ANALYSIS_THINK_MODE:-on}"', script)
-        self.assertIn('FINAL_OUTPUT_THINK_MODE="${FINAL_OUTPUT_THINK_MODE:-on}"', script)
+        self.assertIn('FINAL_OUTPUT_THINK_MODE="${FINAL_OUTPUT_THINK_MODE:-off}"', script)
         self.assertIn('VERIFIER_THINK_MODE="${VERIFIER_THINK_MODE:-on}"', script)
         self.assertIn('--query-analysis-think-mode "$QUERY_ANALYSIS_THINK_MODE"', script)
         self.assertIn('--final-output-think-mode "$FINAL_OUTPUT_THINK_MODE"', script)

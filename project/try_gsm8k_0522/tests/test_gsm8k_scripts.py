@@ -1,7 +1,7 @@
 import sys
 import types
 import unittest
-import tempfile
+import shutil
 import json
 from argparse import Namespace
 from pathlib import Path
@@ -52,15 +52,21 @@ class TestGSM8KScripts(unittest.TestCase):
         self.assertEqual(args.final_output_think_mode, "off")
         self.assertEqual(args.verifier_think_mode, "default")
 
-    def test_smoke_script_runs_calculator_steps_one_to_ten(self):
+    def test_smoke_script_runs_single_minimal_agentflow_variant(self):
         script = (ROOT / "run_smoke.sh").read_text(encoding="utf-8")
 
-        self.assertIn('run_variant "smoke_calculator_steps1"', script)
-        self.assertIn('run_variant "smoke_calculator_steps2"', script)
-        self.assertIn('run_variant "smoke_calculator_steps3"', script)
-        self.assertIn('run_variant "smoke_calculator_steps10"', script)
-        self.assertIn("${MAX_TOKENS:-256}", script)
+        self.assertIn('run_variant "smoke_calculator_steps4" "direct" "direct_output" 4', script)
+        self.assertIn('"$PYTHON" run_gsm8k_agentflow.py', script)
+        self.assertIn('"$PYTHON" score_gsm8k.py', script)
+        self.assertIn("${MAX_TOKENS:-512}", script)
+        self.assertNotIn('run_variant "smoke_calculator_steps1"', script)
+        self.assertNotIn('run_variant "smoke_calculator_steps10"', script)
         self.assertNotIn("smoke_base_hash", script)
+
+    def test_full_script_removed_in_favor_of_baseline_script(self):
+        self.assertFalse((ROOT / "run_full.sh").exists())
+        self.assertTrue((ROOT / "baseline.sh").exists())
+        self.assertTrue((ROOT / "run_gsm8k_agentflow.py").exists())
 
     def test_runner_constructs_solver_with_only_calculator_tool(self):
         captured = {}
@@ -145,8 +151,11 @@ class TestGSM8KScripts(unittest.TestCase):
             run_gsm8k_agentflow.check_vllm_server = lambda base_url, model_name: None
             run_gsm8k_agentflow.construct_solver = lambda **kwargs: FakeSolver()
             run_gsm8k_agentflow.reset_solver_memory = lambda solver: None
-            with tempfile.TemporaryDirectory() as tmpdir:
-                output_dir = Path(tmpdir)
+            output_dir = ROOT / ".tmp_test_outputs"
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+            output_dir.mkdir(parents=True)
+            try:
                 args = Namespace(
                     data_file=Path("unused.json"),
                     output_dir=output_dir,
@@ -172,6 +181,8 @@ class TestGSM8KScripts(unittest.TestCase):
                 run_gsm8k_agentflow.run_examples(args)
 
                 payload = json.loads((output_dir / "output_1.json").read_text(encoding="utf-8"))
+            finally:
+                shutil.rmtree(output_dir, ignore_errors=True)
 
         finally:
             run_gsm8k_agentflow.load_data = original_load_data
