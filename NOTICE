@@ -1,0 +1,20 @@
+AgentFlow RL v3
+Copyright 2026 AgentFlow RL v3 contributors
+
+Reviewed experiment source:
+- Repository: https://github.com/beibeizzz/agentflow.git
+- Review checkout: C:/Users/north/Desktop/agentflow/main
+- Review commit: 0909d6d8ff767cbe887d5fc347f458c588a6b0e5
+
+Primary upstream projects:
+- lupantech/AgentFlow, MIT License
+- verl-project/verl v0.8.0, Apache License 2.0
+  commit 7aed6b230776f963fa09509c10d9c3a767d1102c
+
+Reviewed source SHA-256 values:
+- project/agentflow/agentflow/solver.py: 2872d0d6f60e35da71ecff115c0d7a3c13e6e1f2e1cc0596a1a34d65e4cda38e
+- project/try_gsm8k_0522/flowgrpo_light/policy.py: 288a1b839bd3bba4571e49e89eab4b13bcfaa846e8c7ecf65d9fa5c035c3f666
+- project/try_gsm8k_0522/flowgrpo_light/agentflow_rollout.py: cf220282325739a2196998bcc3f6708a22777515bbe12638fd779b7205b05934
+- project/try_gsm8k_0522/flowgrpo_light/grpo_objective.py: 1ab2f4ace644539083a56c27c3a592f66a227fbb5e11406d5c82138e5d248675
+- project/try_ticket_agent/ticket_env/solver_factory.py: d441b7bbc6d4ebae5b408163470c95fdc2462eff2c36b5c06bd8b2c87a43481b
+- project/try_ticket_agent/ticket_env/verifier.py: 40470d0f229be619a2f9da9597febed83752746750066c220991da99b89b7c35

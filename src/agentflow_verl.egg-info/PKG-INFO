@@ -1,17 +1,32 @@
+Metadata-Version: 2.4
+Name: agentflow-verl
+Version: 0.3.0
+Summary: veRL AgentLoop and turn-level GSPO experiments for AgentFlow
+License-Expression: Apache-2.0
+Requires-Python: <3.13,>=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+License-File: NOTICE
+Requires-Dist: verl[vllm] @ git+https://github.com/verl-project/verl.git@7aed6b230776f963fa09509c10d9c3a767d1102c
+Requires-Dist: TransferQueue==0.1.6
+Requires-Dist: openai>=1.30
+Requires-Dist: tenacity>=9.0
+Requires-Dist: pydantic>=2.0
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: pyarrow>=19.0
+Requires-Dist: pandas>=2.0
+Provides-Extra: test
+Requires-Dist: pytest<9,>=8; extra == "test"
+Requires-Dist: pytest-asyncio>=0.24; extra == "test"
+Dynamic: license-file
+
 # AgentFlow RL v3
 
-AgentFlow RL alpha is a veRL + vLLM implementation of four verifiable AgentFlow
-task environments:
+AgentFlow RL v3 is an independent, language-only veRL rewrite of two reviewed
+AgentFlow experiments:
 
 - GSM8K calculator reasoning;
-- an isolated synthetic Ticket workflow;
-- DeepResearch over HotpotQA and 2Wiki with BM25 retrieval and citation checks;
-- TACO-Verified Easy/Medium coding with Docker-isolated execution.
-
-GSM8K and Ticket preserve the reviewed v3 experiments. DeepResearch and Coding
-train separate `Qwen3-4B` Planner LoRA checkpoints while sharing frozen
-`Qwen3-8B` role modules. See [alpha_deployment.md](docs/alpha_deployment.md) for
-data preparation, exact training parameters, and the two-GPU runbook.
+- an isolated synthetic Ticket workflow with no real business dependency.
 
 The experimental order remains unchanged: first measure the frozen AgentFlow
 baseline, then train only the Planner next-step LoRA with turn-level GSPO. There
@@ -29,12 +44,13 @@ is no SFT stage.
 - The trajectory advantage is broadcast to its real Planner turns.
 - One veRL row is one Planner turn, so native `loss_mode=gspo` remains
   turn-level rather than whole-trajectory GSPO.
-- GSM8K/Ticket use two PPO epochs; DeepResearch/Coding use one PPO epoch.
+- The same flattened turn batch is optimized for exactly two PPO epochs.
 - Ticket reward is binary and all formal splits are 50:50 direct:indirect.
 
-GSM8K/Ticket use temperature `1.2` and GSPO clips `0.001/0.003`.
-DeepResearch/Coding use temperature `1.0` and GSPO clips `0.0003/0.0004`.
-Every task uses top-p `1.0`, disabled top-k, and repetition penalty `1.0`.
+Sampling is fixed to temperature `1.2`, top-p `1.0`, top-k disabled, and
+repetition penalty `1.0`. GSPO clipping is asymmetric: `0.001` low and `0.003`
+high. Top-p is deliberately `1.0`, so actor re-scoring does not need to
+reconstruct nucleus renormalization.
 
 ## Main structure
 
@@ -50,34 +66,20 @@ tests/                         pure, parity, and fake-server integration tests
 
 See [architecture.md](docs/architecture.md) for the exact control/data flow and
 [migration.md](docs/migration.md) for the v2-to-v3 mapping.
-Local and remote acceptance evidence is tracked in
-[alpha_verification.md](docs/alpha_verification.md).
-The Chinese project guide starts at
-[docs/project_guide/README.md](docs/project_guide/README.md) and covers the
-repository structure, architecture, four task flows, runtime stack, data and
-sandbox design, two-GPU execution, post-training theory, and Agentic RL trends.
 
 ## Remote installation
 
-Linux, CUDA, Python 3.11, and Java 21 are recommended. Use a clean environment;
+Linux, CUDA, and Python 3.10 or 3.11 are recommended. Use a clean environment;
 the pinned veRL extra installs Ray, FSDP support, TransferQueue dependencies,
 and a compatible vLLM range.
 
-Place the repository itself on the expanded data volume. All model, corpus,
-index, rollout, and checkpoint paths are repository-relative, and the remote
-audit requires the project root and `DATA_ROOT` to share one filesystem.
-
 ```bash
-conda create -n agentflow-v3 python=3.11 -y
+conda create -n agentflow-v3 python=3.10 -y
 conda activate agentflow-v3
 pip install -r requirements.txt
-pip install -e ".[test,data,research]"
-DATA_ROOT=/data bash scripts/remote/audit_environment.sh
+pip install -e . --no-deps
+python scripts/prepare_verl_data.py --task all
 ```
-
-Prepare the external DeepResearch and Coding sources and indexes with
-[alpha_deployment.md](docs/alpha_deployment.md#data-preparation), then run
-`python scripts/prepare_verl_data.py --task all`.
 
 veRL is pinned to tag `v0.8.0`, commit
 `7aed6b230776f963fa09509c10d9c3a767d1102c`. Do not silently upgrade it: the
@@ -86,22 +88,16 @@ that commit.
 
 If the frozen server uses a separate environment, install
 `requirements-vllm.txt` there. `MODEL_PATH` defaults to
-`model/Qwen/Qwen3-8B` and serves the name `Qwen3-8B`. Legacy GSM8K/Ticket runs
-can set both `MODEL_PATH=model/Qwen/Qwen3-0.6B` and
-`SERVED_MODEL_NAME=Qwen3-0.6B`.
+`model/Qwen/Qwen3-0.6B`.
 
 ## Two-GPU experiment workflow
 
-The alpha reference layout uses two A800 80 GB GPUs:
+The reference 2×40 GB layout is:
 
 - GPU0: external frozen OpenAI-compatible vLLM server;
 - GPU1: veRL FSDP LoRA actor and colocated Planner vLLM rollout.
 
-Use the 0.6B frozen-role service for GSM8K/Ticket and the 8B frozen-role service
-for DeepResearch/Coding. The exact two-phase command sequence and backend gates
-are documented in [alpha_deployment.md](docs/alpha_deployment.md#two-gpu-execution).
-
-Start the selected frozen model in terminal 1:
+Start the frozen model in terminal 1:
 
 ```bash
 bash scripts/serve_frozen_vllm.sh
@@ -170,27 +166,17 @@ needed for error analysis without a separate runtime logger.
 
 ## Local verification
 
-CPU tests use fake Planner and frozen-model servers while preserving exact
-token IDs and log-probabilities.
+The local tests do not require Ray, vLLM, or a GPU. They use fake Planner and
+frozen-model servers while preserving exact token IDs and log-probabilities.
 
 ```bash
 python -m pytest -q
 python -m compileall -q src scripts
 ```
 
-WSL2 single-GPU validation runs real Qwen3-0.6B inference, vLLM rollout, veRL
-AgentLoop training, weight synchronization, and checkpoint persistence:
-
-```bash
-bash scripts/local/setup_wsl_env.sh
-bash scripts/local/serve_gsm8k_frozen_single_gpu.sh  # terminal 1
-bash scripts/local/run_gsm8k_single_gpu_smoke.sh     # terminal 2
-```
-
-See [alpha_deployment.md](docs/alpha_deployment.md#wsl2-single-gpu-smoke) for
-the tested environment and output contract. Formal 4B/8B preflight uses the
-remote Linux CUDA host. Locally generated `data/verl/` files are deterministic
-build artifacts and can be regenerated from the tracked sources.
+Full veRL config validation and a real Qwen3-0.6B smoke require the remote Linux
+CUDA environment. Locally generated `data/verl/` files are ignored because they
+are deterministic build artifacts; regenerate them from the tracked sources.
 
 Data sources and hashes are recorded in [data/README.md](data/README.md).
 Licensing and reviewed-source provenance are recorded in `NOTICE`,

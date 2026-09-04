@@ -1,0 +1,11 @@
+- name: agentflow_ticket
+  _target_: agentflow_rl.verl.agent_loops.ticket.TicketAgentLoop
+
+- name: agentflow_gsm8k
+  _target_: agentflow_rl.verl.agent_loops.gsm8k.GSM8KAgentLoop
+
+- name: agentflow_deepresearch
+  _target_: agentflow_rl.verl.agent_loops.deepresearch.DeepResearchAgentLoop
+
+- name: agentflow_coding
+  _target_: agentflow_rl.verl.agent_loops.coding.CodingAgentLoop

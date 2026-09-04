@@ -1,37 +1,20 @@
-# Models and weights
-/model/
-/models/
-/local_model/*
-!/local_model/run_vllm.txt
-/model_3b/
-*.safetensors
-*.bin
-
-# Execution logs and results
-logs/
-solver_cache/
-*.log
-
-
-# Python Cache
 __pycache__/
 *.py[cod]
-*$py.class
 .pytest_cache/
-.ruff_cache/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Virtual Environments
+.pytest_tmp/
 .venv/
 venv/
-env/
-
-# OS/IDE
-.vscode/
-.idea/
-.DS_Store
-
-# Local feature worktrees
-.worktrees/
+build/
+dist/
+*.egg-info/
+outputs/
+checkpoints/
+model/
+.env
+data/ticket/*.progress.jsonl
+data/verl/
+data/raw/
+data/deepresearch/
+data/coding/
+data/indexes/
+.tmp*/

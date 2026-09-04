@@ -1,0 +1,23 @@
+[
+  {
+    "task": "gsm8k",
+    "source": "data/gsm8k/train.json",
+    "target": "data/verl/gsm8k/train.parquet",
+    "rows": 1327,
+    "sha256": "2fbf9f6d771569367b9b76cd97515f670091317067f4a978259267ff69304257"
+  },
+  {
+    "task": "gsm8k",
+    "source": "data/gsm8k/test.json",
+    "target": "data/verl/gsm8k/test.parquet",
+    "rows": 319,
+    "sha256": "9ccfba73f52050cbf6625b68d1e0e18741c86cd79ec39a784f215e3be09af427"
+  },
+  {
+    "task": "gsm8k",
+    "source": "data/gsm8k/smoke.json",
+    "target": "data/verl/gsm8k/smoke.parquet",
+    "rows": 20,
+    "sha256": "b6834510bd7dc02b51fff9279899992c66cdce8b8c4fa6db2c87c0ffdb5c91fa"
+  }
+]

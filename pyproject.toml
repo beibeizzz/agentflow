@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentflow-verl"
+version = "0.4.0"
+description = "veRL AgentLoop and turn-level GSPO experiments across verifiable task environments"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = "Apache-2.0"
+dependencies = [
+  "verl[vllm] @ git+https://github.com/verl-project/verl.git@7aed6b230776f963fa09509c10d9c3a767d1102c",
+  "TransferQueue==0.1.6",
+  "openai>=1.30",
+  "tenacity>=9.0",
+  "pydantic>=2.0",
+  "PyYAML>=6.0",
+  "pyarrow>=19.0",
+  "pandas>=2.0",
+  "vllm==0.12.0; platform_system == 'Linux'",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9", "pytest-asyncio>=0.24"]
+data = ["datasets>=3.0"]
+research = ["pyserini>=0.44,<1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--basetemp=.pytest_tmp"
+markers = [
+  "gpu: requires Linux CUDA, veRL v0.8.0, Ray, and vLLM",
+]

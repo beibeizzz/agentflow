@@ -1,0 +1,34 @@
+Metadata-Version: 2.4
+Name: agentflow-rl
+Version: 0.1.0
+Summary: LangGraph runtime and TRL adapter for turn-level AgentFlow GSPO experiments
+License-Expression: Apache-2.0
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+License-File: NOTICE
+Requires-Dist: trl==1.6.0
+Requires-Dist: langgraph==1.2.9
+Requires-Dist: transformers<5,>=4.56.2
+Requires-Dist: accelerate>=1.4
+Requires-Dist: datasets>=4.7
+Requires-Dist: peft>=0.11
+Requires-Dist: pydantic>=2.0
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: openai>=1.30
+Requires-Dist: tenacity>=9.0
+Requires-Dist: safetensors>=0.4
+Requires-Dist: numpy>=1.26
+Requires-Dist: tqdm>=4.66
+Provides-Extra: test
+Requires-Dist: pytest<9,>=8; extra == "test"
+Dynamic: license-file
+
+# AgentFlow RL v2
+
+Independent language-only rewrite of the GSM8K and sandbox ticket experiments using LangGraph and a custom TRL turn-level GSPO adapter.
+
+The implementation preserves query-group trajectory advantages, real Planner token IDs, Planner-only LoRA updates, binary task rewards, and controlled baseline/adapter evaluation. It intentionally fixes sampling/log-probability consistency and does not include an SFT stage.
+
+Implementation is proceeding checkpoint by checkpoint with strict red-green-refactor TDD. See `NOTICE`, `THIRD_PARTY_NOTICES.md`, and `LICENSES/AgentFlow-MIT.txt` for source provenance.
+
