@@ -76,9 +76,6 @@ class ToolEvent(BaseModel):
             "Research_Search_Tool": "search",
             "Research_Read_Tool": "read",
             "Base_Generator_Tool": "generate",
-            "Research_Finish_Tool": "finish",
             "Code_Write_Tool": "write_code",
             "Code_Run_Tests_Tool": "run_tests",
-            "Code_Inspect_Error_Tool": "inspect_error",
-            "Code_Finish_Tool": "finish",
         }.get(self.tool_name, "invalid")

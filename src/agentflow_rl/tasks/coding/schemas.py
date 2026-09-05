@@ -14,8 +14,6 @@ CodeToolName = Literal[
     "Base_Generator_Tool",
     "Code_Write_Tool",
     "Code_Run_Tests_Tool",
-    "Code_Inspect_Error_Tool",
-    "Code_Finish_Tool",
 ]
 
 

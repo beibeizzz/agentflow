@@ -54,6 +54,4 @@ class DeepResearchEnvironment:
                     "total_sentences": len(document.sentences),
                 },
             }
-        if action.tool_name == "Research_Finish_Tool":
-            return {"ok": True, "data": {"finish": True}}
         return {"ok": False, "code": "EXTERNAL_GENERATOR_REQUIRED"}

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from time import monotonic
 from typing import Any
 
-from agentflow_rl.runtime.memory import MemoryStore
+from agentflow_rl.runtime.memory import MemoryStore, approximate_token_count
 from agentflow_rl.verl.compat import AgentLoopBase, AgentLoopMetrics, AgentLoopOutput
 from agentflow_rl.verl.ports import AsyncFrozenModel, GeneratedPlannerTurn, generate_planner_turn
 
@@ -33,6 +33,10 @@ def bounded_memory_text(
     reserve_tokens: int,
     reserved_texts: tuple[str, ...],
     required_tags: tuple[str, ...] = ("identity",),
+    required_latest_tags: tuple[str, ...] = (),
+    include_roles: tuple[str, ...] | None = None,
+    include_kinds: tuple[str, ...] | None = None,
+    max_recent_entries: int | None = None,
 ) -> str:
     """Project memory into the space left by role-specific prompt content."""
     available = max_prompt_tokens - reserve_tokens - sum(
@@ -44,6 +48,10 @@ def bounded_memory_text(
         max_tokens=min(max_memory_tokens, available),
         token_counter=token_counter,
         required_tags=required_tags,
+        required_latest_tags=required_latest_tags,
+        include_roles=include_roles,
+        include_kinds=include_kinds,
+        max_recent_entries=max_recent_entries,
     ).text
 
 
@@ -69,6 +77,47 @@ class AgentFlowLoopBase(AgentLoopBase):
                 model=str(config_value(self.config, "agentflow.frozen_model")),
             )
         self.frozen_model = frozen_model
+
+    def token_count(self, text: str) -> int:
+        encode = getattr(self.tokenizer, "encode", None)
+        if callable(encode):
+            return len(encode(text, add_special_tokens=False))
+        return approximate_token_count(text)
+
+    def role_memory_text(
+        self,
+        memory: MemoryStore,
+        role: str,
+        *reserved_texts: str,
+        default_max_tokens: int,
+        default_max_recent_entries: int = 1000,
+        required_tags: tuple[str, ...] = ("identity",),
+        required_latest_tags: tuple[str, ...] = (),
+        include_roles: tuple[str, ...] | None = None,
+        include_kinds: tuple[str, ...] | None = None,
+    ) -> str:
+        """Build one role's deterministic view over shared episode memory."""
+        return bounded_memory_text(
+            memory,
+            token_counter=self.token_count,
+            max_prompt_tokens=int(config_value(self.config, "data.max_prompt_length", 8192)),
+            max_memory_tokens=int(config_value(
+                self.config,
+                f"agentflow.memory_views.{role}.max_tokens",
+                default_max_tokens,
+            )),
+            reserve_tokens=int(config_value(self.config, "agentflow.prompt_reserve_tokens", 512)),
+            reserved_texts=tuple(reserved_texts),
+            required_tags=required_tags,
+            required_latest_tags=required_latest_tags,
+            include_roles=include_roles,
+            include_kinds=include_kinds,
+            max_recent_entries=int(config_value(
+                self.config,
+                f"agentflow.memory_views.{role}.max_recent_entries",
+                default_max_recent_entries,
+            )),
+        )
 
     async def frozen_generate(
         self,

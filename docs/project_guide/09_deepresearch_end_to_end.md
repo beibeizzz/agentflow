@@ -34,7 +34,7 @@
 | 模型端口 | [`verl/ports.py`](../../src/agentflow_rl/verl/ports.py) | `generate_planner_turn`、`AsyncFrozenModel.generate` | Planner token 调用与冻结 HTTP 调用 |
 | Memory | [`runtime/memory.py`](../../src/agentflow_rl/runtime/memory.py) | `MemoryStore.add`、`MemoryStore.project` | 保存完整轨迹并生成 bounded view |
 | 检索后端 | [`tasks/deepresearch/retrieval.py`](../../src/agentflow_rl/tasks/deepresearch/retrieval.py) | `PyseriniResearchIndex.search/read` | 调用 Lucene BM25 与 stored document |
-| 工具环境 | [`tasks/deepresearch/tools.py`](../../src/agentflow_rl/tasks/deepresearch/tools.py) | `DeepResearchEnvironment.execute` | 分发 Search、Read、Finish |
+| 工具环境 | [`tasks/deepresearch/tools.py`](../../src/agentflow_rl/tasks/deepresearch/tools.py) | `DeepResearchEnvironment.execute` | 分发 Search 与 Read；AgentLoop 调用 Base Generator |
 | 终局评测 | [`tasks/deepresearch/verifier.py`](../../src/agentflow_rl/tasks/deepresearch/verifier.py) | `evaluate_research_answer` | 计算 answer、supporting facts 和 joint F1 |
 | Advantage | [`verl/advantage.py`](../../src/agentflow_rl/verl/advantage.py) | `normalize_trajectory_turns` | 以完整 session 为单位做同题标准化 |
 | Trainer 适配 | [`verl/trainer.py`](../../src/agentflow_rl/verl/trainer.py) | `AgentFlowPPOTrainer` | old logprob、advantage、有效 turn、actor update |
@@ -122,9 +122,10 @@ main()
 | `train_batch_size` | 4 prompts | 每个 learner step 的问题数 |
 | `rollout.n` | 6 | 每题完整 session 数 |
 | `max_steps` | 5 | 每条 session 的 Planner 轮数上限 |
-| `role_max_tokens` | 1024 | 每个角色单次输出上限 |
-| `max_prompt_length` | 4096 | Planner/角色 prompt 总预算 |
-| `memory_view_tokens` | 3000 | Memory view 上限 |
+| `role_max_tokens` | 2048 | 每个角色单次输出上限 |
+| `max_prompt_length` | 8192 | Planner/角色 prompt 总预算 |
+| Planner/Verifier/Generator Memory | 6144 | 完整执行证据与判断的投影上限 |
+| Executor/Base Generator Memory | 4096 | 当前动作相关状态与最近事件的投影上限 |
 | `temperature` | 1.0 | Planner group 探索 |
 | `turn_mini_batch_size` | 8 | actor 更新 mini-batch 上限 |
 | `ppo_epochs` | 1 | 每批 turn 数据使用一次 |
@@ -182,7 +183,7 @@ memory.add(turn_index=-1, role="user", kind="question", content=example.question
 response = await client.chat.completions.create(
     model="Qwen3-8B",
     messages=[system_message, user_message],
-    max_tokens=1024,
+    max_tokens=2048,
     temperature=0.0,
     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
 )
@@ -195,9 +196,9 @@ response = await client.chat.completions.create(
 `_view()` 调用共享函数 `bounded_memory_text()`：
 
 1. tokenizer 精确统计保留文本 token；
-2. 从 4,096 prompt 上限扣除系统 prompt、问题、当前 action 和 256 reserve；
-3. `MemoryStore.project()` 优先选择 identity entries 与近期事件；
-4. 生成最多 3,000 token 的确定性 view。
+2. 从 8,192 输入上限扣除系统 prompt、问题、当前 action 和 512 reserve；
+3. `MemoryStore.project()` 优先保留身份信息、最新 Read 证据、搜索结果、生成笔记和 Verifier 判断；
+4. Planner/Verifier/Generator 的 Memory 上限为 6,144，Executor/Base Generator 的上限为 4,096 且只取最近四项普通事件。
 
 `planner_prompt()` 将 question 和 Memory view 组合。`planner_generate()` 进入 `generate_planner_turn()`：
 
@@ -295,7 +296,7 @@ Pyserini 提供 Python API，Lucene 提供 BM25 倒排检索，Java 21 和 JVM h
 
 ### 6.8 Turn 2/3：第二跳搜索与结束判断
 
-Planner 基于第一跳证据形成第二个 query，再执行 Search 和 Read。Verifier 在证据覆盖答案与 supporting facts 后输出 STOP；Planner 也可选择 `Research_Finish_Tool`。循环还会在第 5 轮或 300 秒 deadline 到达时结束。
+Planner 基于第一跳证据形成第二个 query，再执行 Search 和 Read。Verifier 根据 Read 返回的句子级证据判断答案与 supporting facts 是否完整，输出 STOP 或 CONTINUE。循环也会在第 5 轮或 300 秒 deadline 到达时结束。
 
 `Base_Generator_Tool` 提供另一条动作路径：该工具调用 GPU 0 的冻结 Base Generator，对指定 sub-goal 和现有证据生成简短事实笔记，结果继续写入 Memory。
 
@@ -329,6 +330,8 @@ success         = answer_em * supporting_fact_em == 1
 ```
 
 reward 可取 `[0,1]` 连续值，同题 6 条 session 更容易产生方差。`ANSWER_MISMATCH` 和 `SUPPORTING_FACT_MISMATCH` 支持分类型诊断。
+
+评测同时从本轨迹成功执行的 Read 结果构造可见引用集合，记录 `citation_grounded_fraction`、`citation_grounded_exact` 和可见引用数。joint F1 继续作为 outcome-only reward；grounding 指标用于识别 Generator 直接猜测标题或 sentence ID 的轨迹。
 
 ## 8. AgentLoopOutput 如何进入 TransferQueue
 
@@ -451,13 +454,13 @@ HotpotQA distractor local context
 
 一次健康的 DeepResearch step 应看到：
 
-- `answer_em/f1`、`supporting_fact_em/f1`、`joint_em/f1`；
+- `answer_em/f1`、`supporting_fact_em/f1`、`joint_em/f1` 与 citation grounding；
 - 每题 reward mean/std 和 zero-variance group fraction；
 - valid trajectory fraction、平均 Planner turns、tool calls；
 - old-logprob row count 与 trainable-turn count；
 - actor loss、gradient norm、importance ratio；
 - Search/Read latency、trajectory deadline、Lucene errors；
-- rollout token 长度、Memory omitted entries 和 prompt ceiling；
+- rollout token 长度与 prompt ceiling；
 - checkpoint、validation 和 weight sync 时间。
 
 远程 preflight 需要出现真实 Search/Read、组内 reward 方差、有限 loss/gradient、有效 checkpoint 和包含检索结果的后续 Planner prompt，再进入三阶段正式训练。

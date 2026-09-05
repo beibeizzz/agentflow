@@ -37,7 +37,7 @@
 | 测试拆分 | [`tasks/coding/schemas.py`](../../src/agentflow_rl/tasks/coding/schemas.py) | `split_tests` | 按样本 ID 稳定拆成 public/hidden tests |
 | Parquet 转换 | [`verl/data.py`](../../src/agentflow_rl/verl/data.py) | `coding_to_verl_row`、`convert_file` | 构建 veRL row 与 manifest |
 | 主状态机 | [`agent_loops/coding.py`](../../src/agentflow_rl/verl/agent_loops/coding.py) | `CodingAgentLoop.run` | 驱动角色、代码状态、公开/隐藏测试和 reward |
-| 代码环境 | [`tasks/coding/tools.py`](../../src/agentflow_rl/tasks/coding/tools.py) | `CodingEnvironment.execute` | Write、Run Tests、Inspect Error、Finish |
+| 代码环境 | [`tasks/coding/tools.py`](../../src/agentflow_rl/tasks/coding/tools.py) | `CodingEnvironment.execute` | Write、Run Tests；AgentLoop 调用 Base Generator |
 | 宿主沙箱接口 | [`tasks/coding/sandbox.py`](../../src/agentflow_rl/tasks/coding/sandbox.py) | `DockerSandbox.run` | 启动受限容器并解析测试结果 |
 | 容器执行器 | [`docker/code-sandbox/runner.py`](../../docker/code-sandbox/runner.py) | `main`、`run_case`、`run_candidate` | 降权执行 stdio 或函数测试 |
 | 终局评测 | [`tasks/coding/verifier.py`](../../src/agentflow_rl/tasks/coding/verifier.py) | `evaluate_code` | 隐藏测试通过率与失败码 |
@@ -147,7 +147,7 @@ CUDA_VISIBLE_DEVICES=1 python -m agentflow_rl.verl.main \
 | max steps | 5 | 单 session Planner action 上限 |
 | trajectory deadline | 300 s | 角色、工具和终局测试共享总时限 |
 | test suite timeout | 10 s | 每次 public/hidden suite 的总预算 |
-| prompt/response | 4096/1024 | 模型输入与单角色输出上限 |
+| prompt/response | 8192/2048 | 模型输入与单角色输出上限 |
 | rollout sampling | temp 1.0, top-p 1.0 | 同题 session 探索 |
 | turn mini-batch | 8 上限 | 动态 Planner-turn optimizer batch |
 | PPO epochs | 1 | 每批 rollout turn 使用一次 |
@@ -174,7 +174,7 @@ Qwen3-8B 服务、Qwen3-4B Planner vLLM 和 Docker Engine 在 session 间共享�
 
 ### 6.1 初始化题面和 starter code
 
-`CodingAgentLoop.run()` 把 question 写入 `MemoryStore`。starter code 存在时，以带 `identity` tag 的条目写入。`_view()` 调用 `bounded_memory_text()`，在 4,096 token prompt 上限内保留身份信息、近期工具事件和 Verifier judgement。
+`CodingAgentLoop.run()` 把 question 写入 `MemoryStore`。starter code 存在时，以带 `identity` tag 的条目写入。`_view()` 调用共享的角色 Memory 投影接口，在 8,192 token 输入上限内优先保留身份信息、当前完整代码、对应测试结果和最新 Verifier judgement。
 
 ### 6.2 Query Analyzer 提取算法约束
 
@@ -273,12 +273,19 @@ Docker Engine 提供文件系统、网络、进程、CPU 和内存隔离。宿�
 {
   "passed": 2,
   "total": 3,
-  "failures": ["test_2: ..."],
+  "failures": [{
+    "test_index": 2,
+    "error_type": "WRONG_ANSWER",
+    "input": "5\\n1 3 2 4 5\\n",
+    "expected": "4\\n",
+    "actual": "3\\n",
+    "stderr": ""
+  }],
   "timed_out": false
 }
 ```
 
-宿主 `DockerSandbox.run()` 将其解析为 `TestRunResult`，`CodingEnvironment` 保存为 `last_result`。
+宿主 `DockerSandbox.run()` 将其解析为 `TestRunResult`。`CodingEnvironment` 将结果绑定到当前 `code_revision` 和代码 SHA-256，并保存为最新公开测试状态。新代码写入后，上一版本的测试状态立即失效。
 
 ### 6.8 ToolEvent、Memory 和 Verifier
 
@@ -288,17 +295,17 @@ AgentLoop 把工具名、arguments、测试结果和 `ok` 封装成 `ToolEvent`�
 
 public test failure 属于可学习环境反馈，Planner 在下一轮可见失败摘要。Docker daemon、镜像或容器协议异常通过 `RuntimeError` 标记为基础设施无效轨迹。
 
-### 6.9 Turn 2：检查错误
+### 6.9 Turn 2：根据结构化反馈修复
 
-Planner 可选择 `Code_Inspect_Error_Tool`。`CodingEnvironment.execute()` 从 `last_result.failures` 返回最近失败，避免重复运行测试。该反馈进入 Memory 后，Planner 能形成针对性修复计划。
+`Code_Run_Tests_Tool` 一次返回通过数、总数、版本、代码哈希以及结构化失败信息。该 ToolEvent 进入共享 Memory，下一轮 Planner 可以直接依据输入、期望输出、实际输出、异常栈和错误类型形成修复计划。
 
 ### 6.10 Turn 3：写入修复代码
 
 Planner 再次选择 `Code_Write_Tool`，完整替换 `environment.code`。这种 full-code state 更新让每轮 action 都对应明确的程序版本，轨迹日志可重建代码演化过程。
 
-### 6.11 Turn 4：Finish
+### 6.11 Verifier 控制循环结束
 
-Planner 选择 `Code_Finish_Tool`，或 Verifier 在代码准备完成后输出 STOP。循环也会在第 5 轮或 300 秒 trajectory deadline 到达时结束。
+Verifier 检查最新测试结果的代码版本和 SHA-256 是否匹配当前完整代码，并结合公开测试结果输出 STOP 或 CONTINUE。Verifier 是 Coding 循环的结束判断模块；循环也会在第 5 轮或 300 秒 trajectory deadline 到达时结束。
 
 ## 7. Generator 与隐藏测试 reward
 
@@ -363,7 +370,7 @@ TransferQueue rm_scores/response_mask/extra_fields
   -> A_session 传播到该 session 全部 Planner turns
 ```
 
-例如六条轨迹的 hidden pass rate 形成多个水平时，完整通过的轨迹得到正 advantage，部分通过或失败轨迹根据同组均值获得较低 advantage。每条轨迹内部的 Write、Run、Inspect、Rewrite、Finish turn 继承同一个 trajectory advantage。
+例如六条轨迹的 hidden pass rate 形成多个水平时，完整通过的轨迹得到正 advantage，部分通过或失败轨迹根据同组均值获得较低 advantage。每条轨迹内部的 Base Generate、Write、Run Tests 和 Rewrite turn 继承同一个 trajectory advantage。
 
 基础设施无效 session 退出 group 统计。有效 session 少于 2 条或 reward std 低于 `1e-6` 时，该题组 actor update 跳过。
 
@@ -420,7 +427,7 @@ veRL `PPOTrainer.fit()` 在 actor update 后调用 `checkpoint_manager.update_we
 - hidden pass rate、hidden passed/total 和 success；
 - 每题 reward std、zero-variance group fraction；
 - valid trajectory fraction、Planner turn 数、tool-call 数；
-- Write/Run/Inspect/Finish action 分布；
+- Base Generate/Write/Run Tests/Rewrite action 分布；
 - old-logprob row count、trainable-turn count；
 - actor loss、gradient norm、importance ratio；
 - Docker startup latency、suite runtime、container failures；

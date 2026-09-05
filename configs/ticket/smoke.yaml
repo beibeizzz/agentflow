@@ -6,4 +6,4 @@ actor_rollout_ref:
 data: {train_files: [data/verl/ticket/smoke.parquet], val_files: [data/verl/ticket/smoke.parquet], train_batch_size: 4, val_batch_size: 4, max_prompt_length: 1536, max_response_length: 384}
 reward: {reward_model: {enable: false}}
 trainer: {n_gpus_per_node: 1, nnodes: 1, logger: [console, file], project_name: agentflow_v3, experiment_name: ticket_smoke, val_before_train: false, resume_mode: disable, total_epochs: 1, total_training_steps: 2, save_freq: 2, test_freq: -1, rollout_data_dir: outputs/ticket/smoke/rollouts, default_local_dir: outputs/ticket/smoke}
-agentflow: {task: ticket, frozen_base_url: "http://127.0.0.1:8000/v1", frozen_model: Qwen3-0.6B, max_time_s: 120}
+agentflow: {task: ticket, frozen_base_url: "http://127.0.0.1:8000/v1", frozen_model: Qwen3-0.6B, max_time_s: 120, role_max_tokens: 384, prompt_reserve_tokens: 384, memory_views: {planner: {max_tokens: 768}, executor: {max_tokens: 512, max_recent_entries: 3}, verifier: {max_tokens: 768}, generator: {max_tokens: 768}, base_generator: {max_tokens: 512, max_recent_entries: 3}}}

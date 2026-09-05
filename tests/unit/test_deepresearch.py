@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from agentflow_rl.runtime.errors import ActionParseError
 from agentflow_rl.tasks.deepresearch.dataset import (
     allows_retrieval_stage_reuse,
     context_documents,
@@ -45,6 +46,13 @@ def test_research_action_accepts_qwen_empty_think_and_json_fence() -> None:
     )
 
     assert action.tool_name == "Research_Search_Tool"
+
+
+def test_research_action_rejects_removed_finish_tool() -> None:
+    with pytest.raises(ActionParseError):
+        ResearchAction.parse(
+            '{"sub_goal":"finish","tool_name":"Research_Finish_Tool","arguments":{}}'
+        )
 
 
 def test_research_final_answer_accepts_qwen_empty_think_and_json_fence() -> None:
@@ -94,6 +102,33 @@ def test_hotpot_joint_reward_uses_answer_and_supporting_facts() -> None:
     assert result.success is True
     assert result.reward == 1.0
     assert result.metrics["joint_f1"] == 1.0
+
+
+def test_research_verifier_reports_citation_grounding_without_changing_reward() -> None:
+    from agentflow_rl.tasks.deepresearch.schemas import Citation
+
+    example = DeepResearchExample.from_row({
+        "_id": "q-grounding",
+        "dataset": "hotpotqa",
+        "question": "What is the capital?",
+        "answer": "Paris",
+        "supporting_facts": [["Paris", 0]],
+    })
+    prediction = ResearchFinalAnswer.model_validate({
+        "answer": "Paris",
+        "report": "Paris is the capital.",
+        "citations": [{"title": "Paris", "sentence_id": 0}],
+    })
+
+    result = evaluate_research_answer(
+        prediction,
+        example,
+        observed_citations=[Citation(title="Berlin", sentence_id=0)],
+    )
+
+    assert result.reward == 1.0
+    assert result.metrics["citation_grounded_fraction"] == 0.0
+    assert result.metrics["citation_grounded_exact"] == 0.0
 
 
 def test_context_corpus_prefers_the_more_complete_title_record() -> None:

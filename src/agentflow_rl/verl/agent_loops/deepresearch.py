@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from agentflow_rl.runtime.actions import ToolEvent
 from agentflow_rl.runtime.errors import ActionParseError
-from agentflow_rl.runtime.memory import MemoryStore, approximate_token_count
+from agentflow_rl.runtime.memory import MemoryStore
 from agentflow_rl.tasks.deepresearch.prompts import (
     BASE_GENERATOR_SYSTEM,
     EXECUTOR_SYSTEM,
@@ -29,12 +29,17 @@ from agentflow_rl.tasks.deepresearch.retrieval import (
     ResearchDocument,
     ResearchIndex,
 )
-from agentflow_rl.tasks.deepresearch.schemas import DeepResearchExample, ResearchAction, ResearchFinalAnswer
+from agentflow_rl.tasks.deepresearch.schemas import (
+    Citation,
+    DeepResearchExample,
+    ResearchAction,
+    ResearchFinalAnswer,
+)
 from agentflow_rl.tasks.deepresearch.tools import DeepResearchEnvironment
 from agentflow_rl.tasks.deepresearch.verifier import evaluate_research_answer
 from agentflow_rl.verl.compat import AgentLoopOutput, register
 
-from .base import AgentFlowLoopBase, bounded_memory_text, config_value
+from .base import AgentFlowLoopBase, config_value
 
 
 CONCLUSION_RE = re.compile(r"Conclusion:\s*(STOP|CONTINUE)", re.IGNORECASE)
@@ -80,28 +85,54 @@ class DeepResearchAgentLoop(AgentFlowLoopBase):
             return InMemoryBM25Index(documents)
         raise ValueError(f"unsupported retrieval mode: {mode}")
 
-    def _token_count(self, text: str) -> int:
-        encode = getattr(self.tokenizer, "encode", None)
-        if callable(encode):
-            return len(encode(text, add_special_tokens=False))
-        return approximate_token_count(text)
-
-    def _view(self, memory: MemoryStore, *reserved_texts: str) -> str:
-        return bounded_memory_text(
+    def _view(self, memory: MemoryStore, role: str, *reserved_texts: str) -> str:
+        default_limits = {
+            "planner": 6144,
+            "executor": 4096,
+            "verifier": 6144,
+            "generator": 6144,
+            "base_generator": 4096,
+        }
+        default_recent = {"executor": 4, "base_generator": 4}
+        return self.role_memory_text(
             memory,
-            token_counter=self._token_count,
-            max_prompt_tokens=int(config_value(self.config, "data.max_prompt_length", 4096)),
-            max_memory_tokens=int(config_value(self.config, "agentflow.memory_view_tokens", 3000)),
-            reserve_tokens=int(config_value(self.config, "agentflow.prompt_reserve_tokens", 256)),
-            reserved_texts=tuple(reserved_texts),
+            role,
+            *reserved_texts,
+            default_max_tokens=default_limits[role],
+            default_max_recent_entries=default_recent.get(role, 1000),
+            required_tags=("identity",),
+            required_latest_tags=(
+                "evidence",
+                "latest_search",
+                "latest_generated_note",
+                "latest_judgement",
+            ),
+            include_roles=("query_analyzer", "executor", "verifier"),
+            include_kinds=("analysis", "tool_event", "judgement"),
         )
+
+    @staticmethod
+    def _observed_citations(events: list[ToolEvent]) -> tuple[Citation, ...]:
+        citations = []
+        for event in events:
+            if event.tool_name != "Research_Read_Tool" or not event.ok:
+                continue
+            data = event.result.get("data", {}) if isinstance(event.result, dict) else {}
+            title = data.get("title") if isinstance(data, dict) else None
+            sentences = data.get("sentences", ()) if isinstance(data, dict) else ()
+            if not title or not isinstance(sentences, list):
+                continue
+            for sentence in sentences:
+                if isinstance(sentence, dict) and isinstance(sentence.get("sentence_id"), int):
+                    citations.append(Citation(title=str(title), sentence_id=sentence["sentence_id"]))
+        return tuple(citations)
 
     async def run(self, sampling_params: dict[str, Any], **kwargs: Any) -> list[AgentLoopOutput]:
         uid = str(kwargs["uid"])
         session_id = int(kwargs.get("session_id", 0))
         example = DeepResearchExample.from_row(dict(kwargs["extra_info"]))
         max_steps = int(config_value(self.config, "agentflow.max_steps", 5))
-        role_tokens = int(config_value(self.config, "agentflow.role_max_tokens", 1024))
+        role_tokens = int(config_value(self.config, "agentflow.role_max_tokens", 2048))
         deadline = monotonic() + float(config_value(self.config, "agentflow.max_time_s", 300.0))
         environment = DeepResearchEnvironment(
             self._research_index(example),
@@ -127,7 +158,7 @@ class DeepResearchAgentLoop(AgentFlowLoopBase):
             )
             memory.add(turn_index=-1, role="query_analyzer", kind="analysis", content=analysis, tags=("identity",))
             for turn_index in range(max_steps):
-                view = self._view(memory, example.question, PLANNER_SYSTEM)
+                view = self._view(memory, "planner", example.question, PLANNER_SYSTEM)
                 prompt = planner_prompt(example.question, view)
                 turn = await self.planner_generate(
                     uid=uid,
@@ -151,7 +182,7 @@ class DeepResearchAgentLoop(AgentFlowLoopBase):
                         deadline=deadline,
                         prompt=executor_prompt(
                             turn.response,
-                            self._view(memory, turn.response, EXECUTOR_SYSTEM),
+                            self._view(memory, "executor", turn.response, EXECUTOR_SYSTEM),
                         ),
                         system_prompt=EXECUTOR_SYSTEM,
                         think_mode="off",
@@ -162,7 +193,7 @@ class DeepResearchAgentLoop(AgentFlowLoopBase):
                         raise ActionParseError("executor changed the Planner tool selection")
                     if action.tool_name == "Base_Generator_Tool":
                         generator_view = self._view(
-                            memory, action.sub_goal, BASE_GENERATOR_SYSTEM
+                            memory, "base_generator", action.sub_goal, BASE_GENERATOR_SYSTEM
                         )
                         result = {
                             "ok": True,
@@ -190,34 +221,47 @@ class DeepResearchAgentLoop(AgentFlowLoopBase):
                     arguments=action.arguments if action else {},
                     result=result,
                     ok=result.get("ok") is True,
+                    metadata={"sub_goal": action.sub_goal} if action else {},
                 )
                 events.append(event)
                 outputs[-1].metrics.tool_calls = float(action is not None)
+                event_tags = ["tool_result"]
+                if action and result.get("ok") is True:
+                    if action.tool_name == "Research_Search_Tool":
+                        event_tags.append("latest_search")
+                    elif action.tool_name == "Research_Read_Tool":
+                        event_tags.append("evidence")
+                    elif action.tool_name == "Base_Generator_Tool":
+                        event_tags.append("latest_generated_note")
                 memory.add(
                     turn_index=turn_index,
                     role="executor",
                     kind="tool_event",
                     content=event.model_dump(mode="json"),
+                    tags=event_tags,
                 )
                 verifier_text = await self.frozen_generate(
                     deadline=deadline,
                     prompt=verifier_prompt(
                         example.question,
-                        self._view(memory, example.question, VERIFIER_SYSTEM),
+                        self._view(memory, "verifier", example.question, VERIFIER_SYSTEM),
                     ),
                     system_prompt=VERIFIER_SYSTEM,
                     think_mode="off",
                     max_tokens=role_tokens,
                 )
-                memory.add(turn_index=turn_index, role="verifier", kind="judgement", content=verifier_text)
+                memory.add(
+                    turn_index=turn_index,
+                    role="verifier",
+                    kind="judgement",
+                    content=verifier_text,
+                    tags=("latest_judgement",),
+                )
                 outputs[-1].extra_fields.update({
                     "tool_event": event.model_dump(mode="json"),
                     "verifier_conclusion": extract_conclusion(verifier_text),
                     "memory": memory.snapshot(),
                 })
-                if action and action.tool_name == "Research_Finish_Tool":
-                    terminal_reason = "finish_submitted"
-                    break
                 if extract_conclusion(verifier_text) == "STOP":
                     terminal_reason = "verifier_stop"
                     break
@@ -228,7 +272,7 @@ class DeepResearchAgentLoop(AgentFlowLoopBase):
                 deadline=deadline,
                 prompt=generator_prompt(
                     example.question,
-                    self._view(memory, example.question, GENERATOR_SYSTEM),
+                    self._view(memory, "generator", example.question, GENERATOR_SYSTEM),
                 ),
                 system_prompt=GENERATOR_SYSTEM,
                 think_mode="off",
@@ -236,7 +280,11 @@ class DeepResearchAgentLoop(AgentFlowLoopBase):
             )
             try:
                 prediction = ResearchFinalAnswer.parse(final_text)
-                verification = evaluate_research_answer(prediction, example)
+                verification = evaluate_research_answer(
+                    prediction,
+                    example,
+                    observed_citations=self._observed_citations(events),
+                )
             except (ActionParseError, ValidationError, ValueError):
                 verification = None
             if verification is None:

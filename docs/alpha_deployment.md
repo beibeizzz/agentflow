@@ -2,7 +2,8 @@
 
 ## Scope
 
-`project_alpha` preserves the GSM8K and Ticket experiments and adds two isolated
+`project_alpha` carries the GSM8K and Ticket data, environments, terminal
+evaluators, and GSPO settings into the shared role runtime and adds two isolated
 Planner-training environments:
 
 - DeepResearch: HotpotQA and 2Wiki multi-hop retrieval with terminal answer and
@@ -10,11 +11,15 @@ Planner-training environments:
 - Coding: TACO-Verified Easy/Medium with trajectory-visible public tests and
   terminal hidden tests.
 
-The trainable Planner uses `Qwen3-4B` with LoRA. Query Analyzer, Executor,
-Verifier, Generator, and Base Generator share one frozen `Qwen3-8B` vLLM
-server. Every role uses no-think mode. Each role can generate up to 1024 tokens,
-each role prompt targets a 4096-token ceiling, and each trajectory has at most
-five Planner turns.
+GSM8K and Ticket use a Qwen3-0.6B Planner with frozen Qwen3-0.6B role modules.
+DeepResearch and Coding use separate Qwen3-4B Planner LoRA checkpoints and
+share one frozen Qwen3-8B role service. The two extended tasks use no-think
+mode, a 2048-token role output limit, an 8192-token role input target, a
+10240-token frozen-server context ceiling, and at most five Planner turns.
+
+The added Executor/Verifier/Generator chain and Base Generator action change the
+GSM8K/Ticket rollout distribution. Record a new run manifest and rerun baseline,
+training, and evaluation from this alpha commit.
 
 ## Training contract
 

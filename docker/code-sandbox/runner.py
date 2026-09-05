@@ -77,7 +77,9 @@ def run_candidate(
     return completed.returncode, stdout, stderr
 
 
-def run_case(solution: Path, test: dict[str, Any], timeout_s: float) -> tuple[bool, str]:
+def run_case(
+    solution: Path, test: dict[str, Any], timeout_s: float
+) -> tuple[bool, Any, str, str]:
     if test.get("fn_name"):
         runner = solution.parent / "function_case.py"
         runner.write_text(
@@ -101,12 +103,12 @@ def run_case(solution: Path, test: dict[str, Any], timeout_s: float) -> tuple[bo
             timeout=timeout_s,
         )
         if returncode:
-            return False, stderr[-500:]
+            return False, None, stderr[-1000:], "RUNTIME_ERROR"
         try:
             actual = json.loads(stdout)
         except json.JSONDecodeError as exc:
-            return False, f"invalid JSON result: {exc}"
-        return function_output_matches(actual, test.get("expected")), stdout[-500:]
+            return False, stdout[-1000:], str(exc), "OUTPUT_PARSE_ERROR"
+        return function_output_matches(actual, test.get("expected")), actual, stderr[-1000:], "WRONG_ANSWER"
 
     returncode, stdout, stderr = run_candidate(
         [sys.executable, "-I", str(solution)],
@@ -115,11 +117,46 @@ def run_case(solution: Path, test: dict[str, Any], timeout_s: float) -> tuple[bo
         timeout=timeout_s,
     )
     if returncode:
-        return False, stderr[-500:]
+        return False, stdout[-1000:], stderr[-1000:], "RUNTIME_ERROR"
     return (
         stdout_matches(stdout, str(test.get("expected_stdout", ""))),
-        stdout[-500:],
+        stdout[-1000:],
+        stderr[-1000:],
+        "WRONG_ANSWER",
     )
+
+
+def failure_payload(
+    index: int,
+    test: dict[str, Any],
+    error_type: str,
+    *,
+    actual: Any = None,
+    stderr: str = "",
+    message: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "test_index": index,
+        "error_type": error_type,
+        "stderr": stderr[-1000:],
+        "message": message,
+    }
+    if test.get("fn_name"):
+        payload.update({
+            "interface": "function",
+            "fn_name": test.get("fn_name"),
+            "args": test.get("args"),
+            "expected": test.get("expected"),
+            "actual": actual,
+        })
+    else:
+        payload.update({
+            "interface": "stdio",
+            "input": test.get("stdin"),
+            "expected": test.get("expected_stdout"),
+            "actual": actual,
+        })
+    return payload
 
 
 def main() -> int:
@@ -139,21 +176,36 @@ def main() -> int:
         for index, test in enumerate(tests):
             remaining = deadline - monotonic()
             if remaining <= 0:
-                failures.append(f"test_{index}: TIMEOUT")
+                failures.append(failure_payload(
+                    index, test, "TIMEOUT", message="test budget exhausted"
+                ))
                 timed_out = True
                 break
             try:
-                ok, detail = run_case(solution, test, remaining)
+                ok, actual, stderr, error_type = run_case(solution, test, remaining)
                 if ok:
                     passed += 1
                 else:
-                    failures.append(f"test_{index}: {detail}")
+                    failures.append(failure_payload(
+                        index,
+                        test,
+                        error_type,
+                        actual=actual,
+                        stderr=stderr,
+                    ))
             except subprocess.TimeoutExpired:
-                failures.append(f"test_{index}: TIMEOUT")
+                failures.append(failure_payload(
+                    index, test, "TIMEOUT", message="candidate timed out"
+                ))
                 timed_out = True
                 break
             except (OSError, TypeError, ValueError) as exc:
-                failures.append(f"test_{index}: {type(exc).__name__}: {exc}")
+                failures.append(failure_payload(
+                    index,
+                    test,
+                    "HARNESS_ERROR",
+                    message=f"{type(exc).__name__}: {exc}",
+                ))
     print(json.dumps({
         "passed": passed,
         "total": len(tests),

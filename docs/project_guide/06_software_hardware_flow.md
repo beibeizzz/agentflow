@@ -65,8 +65,8 @@ GSM8K/Ticket 阶段使用 Qwen3-0.6B 冻结服务与 Qwen3-0.6B Planner。DeepRe
 | micro-batch/GPU | 1 | 1 | 1 | 1 |
 | learning rate | `2e-6` | `2e-6` | `1e-6` | `1e-6` |
 | rollout temperature | 1.2 | 1.2 | 1.0 | 1.0 |
-| prompt 上限 | 2,048 | 2,048 | 4,096 | 4,096 |
-| Planner response 上限 | 512 | 512 | 1,024 | 1,024 |
+| prompt 上限 | 2,048 | 2,048 | 8,192 | 8,192 |
+| Planner response 上限 | 512 | 512 | 2,048 | 2,048 |
 | 最大 Planner 轮数 | 3 | episode 定义 | 5 | 5 |
 
 四任务都使用 LoRA rank 64、alpha 128、all-linear，KL reward coefficient 和 KL loss 均设为 0。DeepResearch/Coding 使用更窄的 GSPO clip `3e-4/4e-4`，GSM8K/Ticket 保留 `1e-3/3e-3`。
@@ -81,8 +81,8 @@ GSM8K/Ticket 阶段使用 Qwen3-0.6B 冻结服务与 Qwen3-0.6B Planner。DeepRe
 5. AgentLoop 调用 GPU 1 Planner vLLM 生成 action token
 6. CPU 执行 calculator / ticket state / Lucene / Docker
 7. ToolEvent 与 judgement 写入 Memory
-8. 循环至 finish、Verifier STOP、step limit 或 deadline
-9. Generator 形成终局输出，确定性 verifier 计算 reward
+8. 循环至 Verifier STOP、step limit 或 deadline
+9. Generator 形成终局输出，确定性终局评测器计算 reward
 10. 每个 Planner turn 写入 TransferQueue
 11. Trainer 按 query group 计算 advantage
 12. FSDP actor 重算 old logprob 并执行 GSPO backward

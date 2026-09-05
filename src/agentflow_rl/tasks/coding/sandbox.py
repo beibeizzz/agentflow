@@ -8,7 +8,7 @@ import tempfile
 from time import monotonic
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Any, Protocol, Sequence
 
 from .schemas import CodeTest
 
@@ -17,7 +17,7 @@ from .schemas import CodeTest
 class TestRunResult:
     passed: int
     total: int
-    failures: tuple[str, ...]
+    failures: tuple[dict[str, Any], ...]
     timed_out: bool = False
 
     @property
@@ -59,11 +59,48 @@ def _function_output_matches(actual: object, expected: object) -> bool:
     return isinstance(expected, list) and bool(expected) and actual == expected[0]
 
 
+def _trim(value: str, limit: int = 1000) -> str:
+    return value[-limit:]
+
+
+def _failure(
+    index: int,
+    test: CodeTest,
+    error_type: str,
+    *,
+    actual: Any = None,
+    stderr: str = "",
+    message: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "test_index": index,
+        "error_type": error_type,
+        "stderr": _trim(stderr),
+        "message": message,
+    }
+    if test.fn_name:
+        payload.update({
+            "interface": "function",
+            "fn_name": test.fn_name,
+            "args": test.args,
+            "expected": test.expected,
+            "actual": actual,
+        })
+    else:
+        payload.update({
+            "interface": "stdio",
+            "input": test.stdin,
+            "expected": test.expected_stdout,
+            "actual": actual,
+        })
+    return payload
+
+
 class LocalPythonSandbox:
     """Local test runner for trusted fixtures; formal trajectories use DockerSandbox."""
 
     def run(self, code: str, tests: Sequence[CodeTest], *, timeout_s: float = 10.0) -> TestRunResult:
-        failures: list[str] = []
+        failures: list[dict[str, Any]] = []
         passed = 0
         deadline = monotonic() + timeout_s
         with tempfile.TemporaryDirectory(prefix="agentflow-code-") as directory:
@@ -73,7 +110,7 @@ class LocalPythonSandbox:
             for index, test in enumerate(tests):
                 remaining = deadline - monotonic()
                 if remaining <= 0:
-                    failures.append(f"test_{index}: TIMEOUT")
+                    failures.append(_failure(index, test, "TIMEOUT", message="test budget exhausted"))
                     return TestRunResult(passed, len(tests), tuple(failures), timed_out=True)
                 try:
                     if test.fn_name:
@@ -95,8 +132,27 @@ class LocalPythonSandbox:
                         completed = subprocess.run(
                             [sys.executable, str(runner)], capture_output=True, text=True, timeout=remaining
                         )
-                        actual = json.loads(completed.stdout) if completed.returncode == 0 else None
-                        ok = completed.returncode == 0 and _function_output_matches(actual, test.expected)
+                        if completed.returncode != 0:
+                            failures.append(_failure(
+                                index,
+                                test,
+                                "RUNTIME_ERROR",
+                                stderr=completed.stderr,
+                                message=f"process exited with code {completed.returncode}",
+                            ))
+                            continue
+                        try:
+                            actual = json.loads(completed.stdout)
+                        except json.JSONDecodeError as exc:
+                            failures.append(_failure(
+                                index,
+                                test,
+                                "OUTPUT_PARSE_ERROR",
+                                actual=_trim(completed.stdout),
+                                message=str(exc),
+                            ))
+                            continue
+                        ok = _function_output_matches(actual, test.expected)
                     else:
                         completed = subprocess.run(
                             [sys.executable, str(solution)],
@@ -105,18 +161,38 @@ class LocalPythonSandbox:
                             text=True,
                             timeout=remaining,
                         )
-                        ok = completed.returncode == 0 and _stdout_matches(
-                            completed.stdout, test.expected_stdout or ""
-                        )
+                        if completed.returncode != 0:
+                            failures.append(_failure(
+                                index,
+                                test,
+                                "RUNTIME_ERROR",
+                                actual=_trim(completed.stdout),
+                                stderr=completed.stderr,
+                                message=f"process exited with code {completed.returncode}",
+                            ))
+                            continue
+                        actual = _trim(completed.stdout)
+                        ok = _stdout_matches(actual, test.expected_stdout or "")
                     if ok:
                         passed += 1
                     else:
-                        failures.append(f"test_{index}: {completed.stderr[-500:] or completed.stdout[-500:]}")
+                        failures.append(_failure(
+                            index,
+                            test,
+                            "WRONG_ANSWER",
+                            actual=actual,
+                            stderr=completed.stderr,
+                        ))
                 except subprocess.TimeoutExpired:
-                    failures.append(f"test_{index}: TIMEOUT")
+                    failures.append(_failure(index, test, "TIMEOUT", message="candidate timed out"))
                     return TestRunResult(passed, len(tests), tuple(failures), timed_out=True)
                 except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
-                    failures.append(f"test_{index}: {type(exc).__name__}: {exc}")
+                    failures.append(_failure(
+                        index,
+                        test,
+                        "HARNESS_ERROR",
+                        message=f"{type(exc).__name__}: {exc}",
+                    ))
         return TestRunResult(passed, len(tests), tuple(failures))
 
 
@@ -148,7 +224,13 @@ class DockerSandbox:
                 timeout=timeout_s + 5,
             )
         except subprocess.TimeoutExpired:
-            return TestRunResult(0, len(tests), ("SANDBOX_TIMEOUT",), timed_out=True)
+            failure = {
+                "test_index": -1,
+                "error_type": "SANDBOX_TIMEOUT",
+                "stderr": "",
+                "message": "Docker sandbox timed out",
+            }
+            return TestRunResult(0, len(tests), (failure,), timed_out=True)
         except subprocess.CalledProcessError as exc:
             detail = (exc.stderr or exc.stdout or "")[-1000:]
             raise RuntimeError(
@@ -161,7 +243,17 @@ class DockerSandbox:
             return TestRunResult(
                 passed=int(payload["passed"]),
                 total=int(payload["total"]),
-                failures=tuple(str(value) for value in payload.get("failures", ())),
+                failures=tuple(
+                    dict(value)
+                    if isinstance(value, dict)
+                    else {
+                        "test_index": -1,
+                        "error_type": "SANDBOX_FAILURE",
+                        "stderr": "",
+                        "message": str(value),
+                    }
+                    for value in payload.get("failures", ())
+                ),
                 timed_out=bool(payload.get("timed_out", False)),
             )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:

@@ -6,10 +6,12 @@ import re
 from time import monotonic
 from typing import Any
 
-from agentflow_rl.tasks.gsm8k.calculator import format_number, safe_eval_calculation
-from agentflow_rl.runtime.actions import strict_json_object
+from agentflow_rl.runtime.actions import ToolEvent
 from agentflow_rl.runtime.errors import ActionParseError
+from agentflow_rl.runtime.memory import MemoryStore
+from agentflow_rl.tasks.gsm8k.calculator import format_number, safe_eval_calculation
 from agentflow_rl.tasks.gsm8k.prompts import (
+    BASE_GENERATOR_SYSTEM,
     EXECUTOR_SYSTEM,
     FINAL_SYSTEM,
     PLANNER_SYSTEM,
@@ -21,6 +23,7 @@ from agentflow_rl.tasks.gsm8k.prompts import (
     query_prompt,
     verifier_prompt,
 )
+from agentflow_rl.tasks.gsm8k.schemas import GSM8KAction
 from agentflow_rl.tasks.gsm8k.verifier import (
     answers_match,
     extract_numeric_answer,
@@ -57,20 +60,28 @@ def extract_legacy_expression(response: str) -> str:
 
 
 def parse_planner_response(response: str) -> tuple[str, str]:
-    payload = strict_json_object(response)
-    if not isinstance(payload, dict) or set(payload) not in (
-        {"Sub_goal", "Calculation"},
-        {"sub_goal", "calculation"},
-    ):
-        raise ValueError("planner response must be one exact object")
-    return (
-        str(payload.get("Sub_goal") or payload.get("sub_goal")),
-        str(payload.get("Calculation") or payload.get("calculation")),
-    )
+    action = GSM8KAction.parse(response)
+    if action.tool_name != "Calculator_Tool":
+        raise ValueError("planner response does not select Calculator_Tool")
+    return action.sub_goal, str(action.arguments["expression"])
 
 
 @register("agentflow_gsm8k")
 class GSM8KAgentLoop(AgentFlowLoopBase):
+    def _view(self, memory: MemoryStore, role: str, *reserved_texts: str) -> str:
+        recent = 3 if role in {"executor", "base_generator"} else 1000
+        return self.role_memory_text(
+            memory,
+            role,
+            *reserved_texts,
+            default_max_tokens=1024,
+            default_max_recent_entries=recent,
+            required_tags=("identity",),
+            required_latest_tags=("latest_tool_result", "latest_generated_note", "latest_judgement"),
+            include_roles=("query_analyzer", "executor", "verifier"),
+            include_kinds=("analysis", "tool_event", "judgement"),
+        )
+
     async def run(self, sampling_params: dict[str, Any], **kwargs: Any) -> list[AgentLoopOutput]:
         uid = str(kwargs["uid"])
         session_id = int(kwargs.get("session_id", 0))
@@ -85,7 +96,10 @@ class GSM8KAgentLoop(AgentFlowLoopBase):
         ))
         deadline = monotonic() + float(config_value(self.config, "agentflow.max_time_s", 120.0))
         outputs: list[AgentLoopOutput] = []
-        memory: dict[str, dict[str, Any]] = {}
+        memory = MemoryStore()
+        memory.add(turn_index=-1, role="user", kind="question", content=question)
+        memory_actions: dict[str, dict[str, Any]] = {}
+        events: list[ToolEvent] = []
         terminal_reason = ""
         valid = True
         error: str | None = None
@@ -100,8 +114,18 @@ class GSM8KAgentLoop(AgentFlowLoopBase):
                 think_mode="on",
                 max_tokens=role_tokens,
             )
+            memory.add(
+                turn_index=-1,
+                role="query_analyzer",
+                kind="analysis",
+                content=analysis,
+                tags=("identity",),
+            )
             for turn_index in range(max_steps):
-                prompt = planner_prompt(question, analysis, memory)
+                prompt = planner_prompt(
+                    question,
+                    self._view(memory, "planner", question, PLANNER_SYSTEM),
+                )
                 turn = await self.planner_generate(
                     uid=uid,
                     session_id=session_id,
@@ -118,87 +142,138 @@ class GSM8KAgentLoop(AgentFlowLoopBase):
                     turn_index=turn_index,
                     extra_fields={"planner_prompt": prompt, "planner_response": turn.response},
                 ))
-                step_number = turn_index + 1
-                step_key = f"Action Step {step_number}"
                 try:
-                    sub_goal, planner_expression = parse_planner_response(turn.response)
-                except (ActionParseError, ValueError, json.JSONDecodeError) as exc:
-                    outputs[-1].metrics.tool_calls = 0.0
-                    memory_action: dict[str, Any] = {
-                        "tool_name": None,
-                        "sub_goal": None,
-                        "command": "Planner output was invalid; no tool command generated.",
-                        "result": "No calculator execution was attempted.",
-                        "action_predictor_response": turn.response,
-                    }
-                    verifier_response = (
-                        "Conclusion: CONTINUE\nlast Planner output was invalid. "
-                        "check the Calculation first"
-                    )
-                    conclusion = "CONTINUE"
-                    outputs[-1].extra_fields["planner_error"] = str(exc)
-                else:
-                    outputs[-1].metrics.tool_calls = 1.0
-                    expression = planner_expression
-                    command = f'execution = tool.execute(expression="{expression}")'
+                    proposed = GSM8KAction.parse(turn.response)
                     if executor_mode == "legacy_llm":
-                        executor_response = await self.frozen_generate(
+                        executor_text = await self.frozen_generate(
                             deadline=deadline,
-                            prompt=executor_prompt(question, expression),
+                            prompt=executor_prompt(
+                                question,
+                                turn.response,
+                                self._view(memory, "executor", turn.response, EXECUTOR_SYSTEM),
+                            ),
                             system_prompt=EXECUTOR_SYSTEM,
                             think_mode="off",
                             max_tokens=role_tokens,
                         )
                         try:
-                            expression = extract_legacy_expression(executor_response)
-                            command = f'execution = tool.execute(expression="{expression}")'
-                        except ValueError:
-                            expression = None
-                            command = "No command found."
-                    if expression is None:
-                        result: Any = [] if executor_mode == "legacy_llm" else "No execution"
+                            action = GSM8KAction.parse(executor_text)
+                        except ActionParseError:
+                            if proposed.tool_name != "Calculator_Tool":
+                                raise
+                            action = proposed.model_copy(update={
+                                "arguments": {"expression": extract_legacy_expression(executor_text)}
+                            })
+                        if action.tool_name != proposed.tool_name:
+                            raise ActionParseError("executor changed the Planner tool selection")
+                    elif executor_mode == "deterministic":
+                        action = proposed
                     else:
+                        raise ValueError(f"unsupported GSM8K executor mode: {executor_mode}")
+
+                    if action.tool_name == "Base_Generator_Tool":
+                        result = {
+                            "ok": True,
+                            "data": await self.frozen_generate(
+                                deadline=deadline,
+                                prompt=(
+                                    f"Sub-goal: {action.sub_goal}\n\nMemory:\n"
+                                    f"{self._view(memory, 'base_generator', action.sub_goal)}"
+                                ),
+                                system_prompt=BASE_GENERATOR_SYSTEM,
+                                think_mode="off",
+                                max_tokens=role_tokens,
+                            ),
+                        }
+                    else:
+                        expression = str(action.arguments["expression"])
                         try:
-                            value = format_number(safe_eval_calculation(expression))
-                            result = [value] if executor_mode == "legacy_llm" else value
+                            result = {
+                                "ok": True,
+                                "data": {"value": format_number(safe_eval_calculation(expression))},
+                            }
                         except (ValueError, ZeroDivisionError) as exc:
-                            value = f"Error: {exc}"
-                            result = [value] if executor_mode == "legacy_llm" else value
-                    memory_action = {
-                        "tool_name": "Calculator_Tool",
-                        "sub_goal": sub_goal,
-                        "command": command,
-                        "result": result,
-                        "calculation": planner_expression,
-                    }
-                    provisional_memory = {**memory, step_key: memory_action}
-                    verifier_response = await self.frozen_generate(
-                        deadline=deadline,
-                        prompt=verifier_prompt(question, analysis, provisional_memory),
-                        system_prompt=VERIFIER_SYSTEM,
-                        think_mode="on",
-                        max_tokens=role_tokens,
-                    )
-                    try:
-                        conclusion = extract_verifier_conclusion(verifier_response)
-                    except ValueError:
-                        verifier_response = "invalid verifier response"
-                        conclusion = "CONTINUE"
-                memory_action["judge"] = verifier_response
-                memory[step_key] = memory_action
-                outputs[-1].extra_fields["memory_actions"] = {
-                    key: dict(value) for key, value in memory.items()
+                            result = {
+                                "ok": False,
+                                "code": "CALCULATION_ERROR",
+                                "message": str(exc),
+                            }
+                except (ActionParseError, ValueError) as exc:
+                    action = None
+                    result = {"ok": False, "code": "INVALID_ACTION", "message": str(exc)}
+
+                event = ToolEvent(
+                    turn_index=turn_index,
+                    tool_name=action.tool_name if action else "__INVALID_ACTION__",
+                    arguments=action.arguments if action else {},
+                    result=result,
+                    ok=result.get("ok") is True,
+                    metadata={"sub_goal": action.sub_goal} if action else {},
+                )
+                events.append(event)
+                outputs[-1].metrics.tool_calls = float(action is not None)
+                event_tags = ["tool_result"]
+                if action and result.get("ok") is True:
+                    if action.tool_name == "Calculator_Tool":
+                        event_tags.append("latest_tool_result")
+                    else:
+                        event_tags.append("latest_generated_note")
+                memory.add(
+                    turn_index=turn_index,
+                    role="executor",
+                    kind="tool_event",
+                    content=event.model_dump(mode="json"),
+                    tags=event_tags,
+                )
+
+                verifier_response = await self.frozen_generate(
+                    deadline=deadline,
+                    prompt=verifier_prompt(
+                        question,
+                        self._view(memory, "verifier", question, VERIFIER_SYSTEM),
+                    ),
+                    system_prompt=VERIFIER_SYSTEM,
+                    think_mode="on",
+                    max_tokens=role_tokens,
+                )
+                try:
+                    conclusion = extract_verifier_conclusion(verifier_response)
+                except ValueError:
+                    conclusion = "CONTINUE"
+                memory.add(
+                    turn_index=turn_index,
+                    role="verifier",
+                    kind="judgement",
+                    content=verifier_response,
+                    tags=("latest_judgement",),
+                )
+
+                step_key = f"Action Step {turn_index + 1}"
+                memory_actions[step_key] = {
+                    "tool_name": event.tool_name,
+                    "sub_goal": event.metadata.get("sub_goal"),
+                    "command": event.arguments,
+                    "result": event.result,
+                    "judge": verifier_response,
                 }
-                outputs[-1].extra_fields["verifier_conclusion"] = conclusion
+                outputs[-1].extra_fields.update({
+                    "tool_event": event.model_dump(mode="json"),
+                    "memory": memory.snapshot(),
+                    "memory_actions": {key: dict(value) for key, value in memory_actions.items()},
+                    "verifier_conclusion": conclusion,
+                })
                 if conclusion == "STOP":
                     terminal_reason = "verifier_stop"
                     break
-                if step_number >= max_steps:
+                if turn_index + 1 == max_steps:
                     terminal_reason = "max_steps"
 
             final_answer_text = await self.frozen_generate(
                 deadline=deadline,
-                prompt=final_prompt(question, analysis, memory),
+                prompt=final_prompt(
+                    question,
+                    self._view(memory, "generator", question, FINAL_SYSTEM),
+                ),
                 system_prompt=FINAL_SYSTEM,
                 think_mode="off",
                 max_tokens=role_tokens,
@@ -210,7 +285,7 @@ class GSM8KAgentLoop(AgentFlowLoopBase):
             reward = 0.0
             terminal_reason = "time_limit"
             verification = {"success": False, "failure_codes": ["TIME_LIMIT"]}
-        except Exception as exc:
+        except (OSError, RuntimeError) as exc:
             logger.exception(
                 "GSM8K trajectory failed before completion: uid=%s session_id=%s",
                 uid,
@@ -230,7 +305,9 @@ class GSM8KAgentLoop(AgentFlowLoopBase):
             final_fields={
                 "episode_id": episode_id,
                 "analysis": analysis,
-                "memory_actions": memory,
+                "memory": memory.snapshot(),
+                "memory_actions": memory_actions,
+                "tool_events": [event.model_dump(mode="json") for event in events],
                 "final_answer": final_answer_text,
                 "verification": verification,
                 "reward_extra_info": {
@@ -242,3 +319,10 @@ class GSM8KAgentLoop(AgentFlowLoopBase):
                 **({"error": error} if error else {}),
             },
         )
+
+
+__all__ = [
+    "GSM8KAgentLoop",
+    "extract_legacy_expression",
+    "parse_planner_response",
+]

@@ -4,12 +4,26 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agentflow_rl.runtime.actions import ToolAction, strict_json_object
+from agentflow_rl.runtime.errors import ActionParseError
+
 
 STATUSES = ("open", "pending_customer", "pending_finance", "resolved", "closed")
 TEAMS = ("support", "billing", "finance", "logistics", "fraud")
 PRIORITIES = ("low", "normal", "high", "urgent")
 MUTABLE_FIELDS = ("status", "assigned_team", "priority")
 FINISH_OUTCOMES = ("completed",)
+
+
+class TicketAction(ToolAction):
+    sub_goal: str = Field(default="execute the selected ticket operation", min_length=1)
+
+    @classmethod
+    def parse(cls, text: str) -> "TicketAction":
+        try:
+            return cls.model_validate(strict_json_object(text))
+        except (ActionParseError, ValueError) as exc:
+            raise ActionParseError("ticket action must be one strict JSON object") from exc
 
 
 class StrictModel(BaseModel):

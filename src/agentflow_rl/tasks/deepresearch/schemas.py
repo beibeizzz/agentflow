@@ -12,7 +12,6 @@ ResearchToolName = Literal[
     "Research_Search_Tool",
     "Research_Read_Tool",
     "Base_Generator_Tool",
-    "Research_Finish_Tool",
 ]
 
 

@@ -43,3 +43,77 @@ def test_bounded_memory_text_reserves_role_specific_prompt_space() -> None:
     )
 
     assert len(text) <= 150
+
+
+def test_memory_role_projection_keeps_latest_tagged_state() -> None:
+    memory = MemoryStore()
+    memory.add(
+        turn_index=-1,
+        role="query_analyzer",
+        kind="analysis",
+        content="task analysis",
+        tags=("identity",),
+    )
+    memory.add(
+        turn_index=0,
+        role="executor",
+        kind="tool_event",
+        content="old code",
+        tags=("current_code",),
+    )
+    memory.add(
+        turn_index=1,
+        role="verifier",
+        kind="judgement",
+        content="old judgement",
+    )
+    memory.add(
+        turn_index=2,
+        role="executor",
+        kind="tool_event",
+        content="new code",
+        tags=("current_code",),
+    )
+
+    view = memory.project(
+        max_tokens=100,
+        token_counter=lambda text: len(text.split()),
+        required_tags=("identity",),
+        required_latest_tags=("current_code",),
+        include_roles=("query_analyzer", "executor"),
+        max_recent_entries=0,
+    )
+
+    assert "task analysis" in view.text
+    assert "new code" in view.text
+    assert "old code" not in view.text
+    assert "old judgement" not in view.text
+
+
+def test_memory_role_projection_prioritizes_latest_state_under_budget_pressure() -> None:
+    memory = MemoryStore()
+    memory.add(
+        turn_index=-1,
+        role="query_analyzer",
+        kind="analysis",
+        content="long stable identity that fills most of the available memory budget",
+        tags=("identity",),
+    )
+    memory.add(
+        turn_index=2,
+        role="executor",
+        kind="tool_event",
+        content="latest tested code passed",
+        tags=("latest_test_result",),
+    )
+
+    view = memory.project(
+        max_tokens=9,
+        token_counter=lambda text: len(text.split()),
+        required_tags=("identity",),
+        required_latest_tags=("latest_test_result",),
+        max_recent_entries=0,
+    )
+
+    assert "latest tested code passed" in view.text
+    assert "long stable identity" not in view.text

@@ -1,10 +1,18 @@
 # AgentFlow RL v3 Extensible Task SDK Design
 
 **Date:** 2026-07-16  
-**Status:** Approved approach, pending written-spec review  
+**Status:** Historical design exploration; superseded by `docs/architecture.md`
 **Review source:** `C:\Users\north\Desktop\agentflow\main\project`  
 **Current rewrite:** `C:\Users\north\Desktop\agentflow\project_v3`  
 **Pinned training framework:** veRL v0.8.0, commit `7aed6b230776f963fa09509c10d9c3a767d1102c`
+
+The implemented alpha uses veRL's configured AgentLoop registry as the task
+plugin boundary. `AgentFlowLoopBase`, `MemoryStore`, Planner/frozen-model ports,
+trajectory metadata, terminal verification records, and the Trainer/GSPO adapter
+form the reusable runtime. Each task keeps an explicit Python state machine for
+its action schema, tools, environment, and terminal evaluator. Class sketches
+for `TaskSpec`, `TaskController`, and a separate local runtime below remain
+conceptual sketches from the earlier design direction.
 
 ## 1. Goal
 

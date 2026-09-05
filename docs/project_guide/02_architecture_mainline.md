@@ -10,9 +10,11 @@
 |---|---|---|
 | Query Analyzer | 冻结 | 提取目标、约束和初始线索 |
 | Planner | 可训练 | 根据问题与 Memory 决定下一步子目标和工具动作 |
-| Executor | 冻结 | 将计划转换为严格工具调用并执行环境动作 |
-| Verifier | 冻结或规则实现 | 判断当前进度、错误和继续条件 |
+| Executor | 冻结 | 校验 Planner 的工具选择并固化严格工具参数 |
+| Verifier | 冻结 | 根据已执行证据判断当前进度和 STOP/CONTINUE |
 | Generator | 冻结 | 基于最终 Memory 形成任务答案 |
+
+确定性工具环境执行动作，确定性终局评测器从最终答案或环境状态生成 reward。Verifier 提供循环控制判断，终局评测器提供训练信号，两项职责保持独立。
 
 训练将系统成败归因到 Planner 的多轮 action。其他模块、工具和环境为 Planner 提供稳定的交互分布。
 
@@ -26,7 +28,7 @@ flowchart TD
     P --> E[冻结 Executor 校验并转换 action]
     E --> T[工具或任务环境执行]
     T --> W[ToolEvent 写入 Memory]
-    W --> V[冻结或确定性 Verifier]
+    W --> V[冻结 Verifier]
     V --> J[Judgement 写入 Memory]
     J --> C{终止条件}
     C -->|继续| P
@@ -80,9 +82,9 @@ A_i = (R_i - mean(R)) / population_std(R)
 
 ## 5. Memory 与上下文
 
-`MemoryStore` 保存问题、分析、工具事件和 Verifier 判断，写入顺序保持完整轨迹可审计。DeepResearch 和 Coding 依据 prompt 预算生成确定性 Memory view：
+`MemoryStore` 保存问题、分析、工具事件和 Verifier 判断，写入顺序保持完整轨迹可审计。四个任务都通过 `AgentFlowLoopBase.role_memory_text()` 依据 prompt 预算生成确定性 Memory view：
 
-- 身份信息和 starter code 等关键条目优先保留；
+- 身份信息、当前任务状态和最新 Verifier 判断优先保留；
 - 近期工具事件按时间倒序进入候选；
 - 最终 view 恢复原时间顺序；
 - prompt、系统指令和当前 action 预留固定 token 空间。
@@ -102,7 +104,7 @@ A_i = (R_i - mean(R)) / population_std(R)
   -> 逐轨迹失败分析
 ```
 
-GSM8K 与 Ticket 保留 0.6B 实验语义。DeepResearch 与 Coding 分别从 Qwen3-4B Planner checkpoint 启动，并共享 GPU 0 上的 Qwen3-8B 冻结模块服务。四个任务分别保存 adapter，任务间参数保持隔离。
+GSM8K 与 Ticket 沿用 0.6B 模型、数据环境、终局评测和 GSPO 设置，并在 alpha 中接入完整角色链与共享 Memory。角色和提示词升级形成新的 rollout 分布，因此 baseline、训练和评测都从同一 alpha commit 重新执行。DeepResearch 与 Coding 分别从 Qwen3-4B Planner checkpoint 启动，并共享 GPU 0 上的 Qwen3-8B 冻结模块服务。四个任务分别保存 adapter，任务间参数保持隔离。
 
 ## 7. 项目边界
 

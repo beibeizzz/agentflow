@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from agentflow_rl.runtime.errors import ActionParseError
 from agentflow_rl.tasks.coding.dataset import (
     deterministic_limit,
     parse_taco_tests,
@@ -41,6 +44,16 @@ def test_code_action_accepts_qwen_empty_think_and_json_fence() -> None:
     assert action.tool_name == "Code_Write_Tool"
 
 
+@pytest.mark.parametrize("tool_name", ["Code_Inspect_Error_Tool", "Code_Finish_Tool"])
+def test_code_action_rejects_removed_control_tools(tool_name: str) -> None:
+    with pytest.raises(ActionParseError):
+        CodeAction.parse(
+            '{"sub_goal":"control","tool_name":"'
+            + tool_name
+            + '","arguments":{}}'
+        )
+
+
 def test_final_code_accepts_qwen_empty_think_json_and_python_fence() -> None:
     json_code = FinalCode.parse(
         '<think>\n\n</think>\n```json\n{"code":"print(42)"}\n```'
@@ -68,6 +81,53 @@ def test_local_sandbox_supports_stdio_and_function_tests() -> None:
 
     assert stdio.pass_rate == 1.0
     assert function.pass_rate == 1.0
+
+
+def test_public_test_failure_is_structured_for_memory_diagnostics() -> None:
+    result = LocalPythonSandbox().run(
+        "a, b = map(int, input().split())\nprint(a - b)\n",
+        [CodeTest(stdin="2 3\n", expected_stdout="5\n")],
+        timeout_s=2,
+    )
+
+    failure = result.failures[0]
+    assert failure["error_type"] == "WRONG_ANSWER"
+    assert failure["input"] == "2 3\n"
+    assert failure["expected"] == "5\n"
+    assert failure["actual"].strip() == "-1"
+
+
+def test_writing_new_code_invalidates_previous_public_test_result() -> None:
+    example = CodeExample(
+        episode_id="sum-versioned",
+        question="sum",
+        difficulty="EASY",
+        public_tests=(CodeTest(stdin="1 2\n", expected_stdout="3\n"),),
+        hidden_tests=(CodeTest(stdin="8 9\n", expected_stdout="17\n"),),
+    )
+    environment = CodingEnvironment(example, LocalPythonSandbox())
+    first_write = environment.execute(CodeAction.model_validate({
+        "sub_goal": "write wrong code",
+        "tool_name": "Code_Write_Tool",
+        "arguments": {"code": "a, b = map(int, input().split())\nprint(a - b)\n"},
+    }))
+    first_test = environment.execute(CodeAction.model_validate({
+        "sub_goal": "run public tests",
+        "tool_name": "Code_Run_Tests_Tool",
+        "arguments": {},
+    }))
+    second_write = environment.execute(CodeAction.model_validate({
+        "sub_goal": "repair code",
+        "tool_name": "Code_Write_Tool",
+        "arguments": {"code": "a, b = map(int, input().split())\nprint(a + b)\n"},
+    }))
+
+    assert first_write["data"]["code_revision"] == 1
+    assert first_test["data"]["code_revision"] == 1
+    assert first_test["data"]["tests_passed"] is False
+    assert second_write["data"]["code_revision"] == 2
+    assert environment.last_result is None
+    assert environment.last_tested_revision is None
 
 
 def test_public_feedback_and_hidden_terminal_reward_are_separate() -> None:

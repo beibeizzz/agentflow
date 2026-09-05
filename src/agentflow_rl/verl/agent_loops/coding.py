@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from agentflow_rl.runtime.actions import ToolEvent
 from agentflow_rl.runtime.errors import ActionParseError
-from agentflow_rl.runtime.memory import MemoryStore, approximate_token_count
+from agentflow_rl.runtime.memory import MemoryStore
 from agentflow_rl.tasks.coding.prompts import (
     BASE_GENERATOR_SYSTEM,
     EXECUTOR_SYSTEM,
@@ -29,7 +29,7 @@ from agentflow_rl.tasks.coding.tools import CodingEnvironment
 from agentflow_rl.tasks.coding.verifier import evaluate_code
 from agentflow_rl.verl.compat import AgentLoopOutput, register
 
-from .base import AgentFlowLoopBase, bounded_memory_text, config_value
+from .base import AgentFlowLoopBase, config_value
 
 
 CONCLUSION_RE = re.compile(r"Conclusion:\s*(STOP|CONTINUE)", re.IGNORECASE)
@@ -53,20 +53,25 @@ class CodingAgentLoop(AgentFlowLoopBase):
             1,
         )))
 
-    def _token_count(self, text: str) -> int:
-        encode = getattr(self.tokenizer, "encode", None)
-        if callable(encode):
-            return len(encode(text, add_special_tokens=False))
-        return approximate_token_count(text)
-
-    def _view(self, memory: MemoryStore, *reserved_texts: str) -> str:
-        return bounded_memory_text(
+    def _view(self, memory: MemoryStore, role: str, *reserved_texts: str) -> str:
+        default_limits = {
+            "planner": 6144,
+            "executor": 4096,
+            "verifier": 6144,
+            "generator": 6144,
+            "base_generator": 4096,
+        }
+        default_recent = {"executor": 4, "base_generator": 4}
+        return self.role_memory_text(
             memory,
-            token_counter=self._token_count,
-            max_prompt_tokens=int(config_value(self.config, "data.max_prompt_length", 4096)),
-            max_memory_tokens=int(config_value(self.config, "agentflow.memory_view_tokens", 3000)),
-            reserve_tokens=int(config_value(self.config, "agentflow.prompt_reserve_tokens", 256)),
-            reserved_texts=tuple(reserved_texts),
+            role,
+            *reserved_texts,
+            default_max_tokens=default_limits[role],
+            default_max_recent_entries=default_recent.get(role, 1000),
+            required_tags=("identity",),
+            required_latest_tags=("current_code", "latest_test_result", "latest_judgement"),
+            include_roles=("user", "query_analyzer", "executor", "verifier"),
+            include_kinds=("starter_code", "analysis", "tool_event", "judgement"),
         )
 
     async def run(self, sampling_params: dict[str, Any], **kwargs: Any) -> list[AgentLoopOutput]:
@@ -74,7 +79,7 @@ class CodingAgentLoop(AgentFlowLoopBase):
         session_id = int(kwargs.get("session_id", 0))
         example = CodeExample.from_row(dict(kwargs["extra_info"]))
         max_steps = int(config_value(self.config, "agentflow.max_steps", 5))
-        role_tokens = int(config_value(self.config, "agentflow.role_max_tokens", 1024))
+        role_tokens = int(config_value(self.config, "agentflow.role_max_tokens", 2048))
         test_timeout_s = float(config_value(self.config, "agentflow.coding.test_timeout_s", 10.0))
         deadline = monotonic() + float(config_value(self.config, "agentflow.max_time_s", 300.0))
         environment = CodingEnvironment(example, self.code_sandbox, test_timeout_s=test_timeout_s)
@@ -86,7 +91,7 @@ class CodingAgentLoop(AgentFlowLoopBase):
                 role="user",
                 kind="starter_code",
                 content=example.starter_code,
-                tags=("identity",),
+                tags=("identity", "current_code"),
             )
         outputs: list[AgentLoopOutput] = []
         events: list[ToolEvent] = []
@@ -106,7 +111,7 @@ class CodingAgentLoop(AgentFlowLoopBase):
             )
             memory.add(turn_index=-1, role="query_analyzer", kind="analysis", content=analysis, tags=("identity",))
             for turn_index in range(max_steps):
-                view = self._view(memory, example.question, PLANNER_SYSTEM)
+                view = self._view(memory, "planner", example.question, PLANNER_SYSTEM)
                 prompt = planner_prompt(example.question, view)
                 turn = await self.planner_generate(
                     uid=uid,
@@ -130,7 +135,7 @@ class CodingAgentLoop(AgentFlowLoopBase):
                         deadline=deadline,
                         prompt=executor_prompt(
                             turn.response,
-                            self._view(memory, turn.response, EXECUTOR_SYSTEM),
+                            self._view(memory, "executor", turn.response, EXECUTOR_SYSTEM),
                         ),
                         system_prompt=EXECUTOR_SYSTEM,
                         think_mode="off",
@@ -141,7 +146,7 @@ class CodingAgentLoop(AgentFlowLoopBase):
                         raise ActionParseError("executor changed the Planner tool selection")
                     if action.tool_name == "Base_Generator_Tool":
                         generator_view = self._view(
-                            memory, action.sub_goal, BASE_GENERATOR_SYSTEM
+                            memory, "base_generator", action.sub_goal, BASE_GENERATOR_SYSTEM
                         )
                         generated = await self.frozen_generate(
                             deadline=deadline,
@@ -167,35 +172,51 @@ class CodingAgentLoop(AgentFlowLoopBase):
                     arguments=action.arguments if action else {},
                     result=result,
                     ok=result.get("ok") is True,
+                    metadata={"sub_goal": action.sub_goal} if action else {},
                 )
                 events.append(event)
                 outputs[-1].metrics.tool_calls = float(action is not None)
+                event_tags = ["tool_result"]
+                if action and result.get("ok") is True:
+                    if action.tool_name == "Code_Write_Tool":
+                        event_tags.append("current_code")
+                    elif action.tool_name == "Code_Run_Tests_Tool":
+                        event_tags.append("latest_test_result")
                 memory.add(
                     turn_index=turn_index,
                     role="executor",
                     kind="tool_event",
                     content=event.model_dump(mode="json"),
+                    tags=event_tags,
                 )
                 verifier_text = await self.frozen_generate(
                     deadline=deadline,
                     prompt=verifier_prompt(
                         example.question,
-                        self._view(memory, example.question, VERIFIER_SYSTEM),
+                        self._view(
+                            memory,
+                            "verifier",
+                            example.question,
+                            VERIFIER_SYSTEM,
+                        ),
                     ),
                     system_prompt=VERIFIER_SYSTEM,
                     think_mode="off",
                     max_tokens=role_tokens,
                 )
                 conclusion = extract_conclusion(verifier_text)
-                memory.add(turn_index=turn_index, role="verifier", kind="judgement", content=verifier_text)
+                memory.add(
+                    turn_index=turn_index,
+                    role="verifier",
+                    kind="judgement",
+                    content=verifier_text,
+                    tags=("latest_judgement",),
+                )
                 outputs[-1].extra_fields.update({
                     "tool_event": event.model_dump(mode="json"),
                     "verifier_conclusion": conclusion,
                     "memory": memory.snapshot(),
                 })
-                if action and action.tool_name == "Code_Finish_Tool":
-                    terminal_reason = "finish_submitted"
-                    break
                 if conclusion == "STOP":
                     terminal_reason = "verifier_stop"
                     break
@@ -206,8 +227,12 @@ class CodingAgentLoop(AgentFlowLoopBase):
                 deadline=deadline,
                 prompt=generator_prompt(
                     example.question,
-                    self._view(memory, example.question, environment.code, GENERATOR_SYSTEM),
-                    environment.code,
+                    self._view(
+                        memory,
+                        "generator",
+                        example.question,
+                        GENERATOR_SYSTEM,
+                    ),
                 ),
                 system_prompt=GENERATOR_SYSTEM,
                 think_mode="off",
@@ -231,7 +256,13 @@ class CodingAgentLoop(AgentFlowLoopBase):
                     )
                 reward = verification.reward
                 verification_data = verification.model_dump(mode="json")
-                verification_data["hidden_failures"] = list(hidden_result.failures)
+                verification_data["hidden_failures"] = [
+                    {
+                        "test_index": failure.get("test_index", -1),
+                        "error_type": failure.get("error_type", "UNKNOWN"),
+                    }
+                    for failure in hidden_result.failures
+                ]
             except (ActionParseError, ValidationError, ValueError):
                 reward = 0.0
                 verification_data = {"success": False, "reward": 0.0, "failure_codes": ["INVALID_FINAL_OUTPUT"]}

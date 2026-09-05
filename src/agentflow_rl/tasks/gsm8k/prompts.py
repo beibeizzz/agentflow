@@ -8,35 +8,19 @@ GSM8K_SYSTEM_PROMPT = (
     "Keep the reasoning concise and arithmetic-focused."
 )
 
-# The original experiment routes every frozen subagent and the trainable Planner
-# through the same GSM8K system prompt.
 QUERY_SYSTEM = GSM8K_SYSTEM_PROMPT
 PLANNER_SYSTEM = GSM8K_SYSTEM_PROMPT
 EXECUTOR_SYSTEM = GSM8K_SYSTEM_PROMPT
 VERIFIER_SYSTEM = GSM8K_SYSTEM_PROMPT
 FINAL_SYSTEM = GSM8K_SYSTEM_PROMPT
+BASE_GENERATOR_SYSTEM = GSM8K_SYSTEM_PROMPT
 
 CALCULATOR_TOOL_METADATA: dict[str, Any] = {
     "tool_name": "Calculator_Tool",
-    "tool_description": (
-        "A deterministic calculator supporting multi-step operations, percentages, "
-        "and elementary arithmetic. "
-    ),
-    "tool_version": None,
-    "input_types": {
-        "expression": (
-            "str - Arithmetic expression using +, -, *, /, parentheses, decimals. "
-        )
-    },
-    "output_type": "str - The numeric result of the evaluated expression.",
-    "demo_commands": [],
+    "tool_description": "Evaluate an elementary arithmetic expression deterministically.",
+    "input_types": {"expression": "str"},
+    "output_type": "str",
     "require_llm_engine": False,
-    "user_metadata": {
-        "limitations": (
-            'Only arithmetic expressions are allowed. Variables, functions, text, '
-            'units, and "=" signs are not allowed.'
-        )
-    },
 }
 
 
@@ -55,128 +39,106 @@ Rules:
 """
 
 
-def planner_prompt(question: str, analysis: str, memory: dict[str, Any]) -> str:
+def planner_prompt(question: str, memory: Any) -> str:
     return f"""
 /no_think
-You should choose the next calculator step and provide the arithmetic expression.
-You are strict to output a JSON.
-Use the Judge feedback first.
-Do not repeat any previous Calculation or Sub_goal in Memory.
+Choose one action that advances the arithmetic proof.
+Use the latest Verifier judgement first.
+Preserve successful results and choose the next unfinished sub-goal.
 Problem: {question}
-Query Analysis: {analysis}
 Memory: {memory}
 
 Rules:
 - Return only one JSON object.
-- "Sub_goal": briefly say what this calculation computes.
-- "Calculation": write only the arithmetic expression and must match this regex: ^[0-9+\\-*/(). ]+$
-- In calculation, use only digits, +, -, *, /, parentheses, and decimals.
-- In calculation, do not include variables, words, units, "=", , currency symbols, commas, explanatory text, or the result.
+- Calculator_Tool arguments are {{"expression":"..."}} and the expression uses digits, +, -, *, /, parentheses, and decimals.
+- Base_Generator_Tool arguments are {{}} and it supplies concise reasoning for an unresolved sub-goal.
+- Output exactly {{"sub_goal":"...","tool_name":"Calculator_Tool|Base_Generator_Tool","arguments":{{...}}}}.
 
 JSON example:
 {{
-  "Sub_goal": "Calculate reading time per night",
-  "Calculation": "2 / 2"
+  "sub_goal": "Calculate reading time per night",
+  "tool_name": "Calculator_Tool",
+  "arguments": {{"expression": "2 / 2"}}
 }}
 
-Important:
-- Replace the placeholder contents with values specific to the current problem.
-- Do not copy the example text or expression.
-
+Replace the example values with values specific to the current problem.
 """
 
 
-def executor_prompt(
-    question: str,
-    context: str,
-    tool_metadata: dict[str, Any] = CALCULATOR_TOOL_METADATA,
-) -> str:
+def executor_prompt(question: str, proposed_action: str, memory: str) -> str:
     return f"""
 /no_think
-Your should extract the expression of Context into one executable Calculator_Tool command.
+Validate and concretize the proposed action while preserving tool_name.
 
 Problem: {question}
-Context: {context}
-Tool: Calculator_Tool
-Tool description: {tool_metadata}
+Proposed action: {proposed_action}
+Relevant memory: {memory}
 
 Rules:
-- Extract and copy the original arithmetic expression from Context.
-- Do not calculate the result.
-- Do not add words, "=" or units inside expression.
-- Return only one Python code block and no prose and follow the format below strictly.
-- Do not add numbers from the problem.
-- Do not combine Context with other calculations.
-- Do not change the operation order.
-
-Output Format:
-
-```python
-execution = tool.execute(expression="<raw arithmetic expression>")
-```
-
+- Preserve the proposed tool_name.
+- Calculator_Tool receives exactly one arithmetic expression.
+- Base_Generator_Tool receives an empty arguments object.
+- Return exactly one JSON object with sub_goal, tool_name, and arguments.
 """
 
 
-def verifier_prompt(question: str, analysis: str, memory: dict[str, Any]) -> str:
+def verifier_prompt(question: str, memory: Any) -> str:
     return f"""
 Decide whether memory has enough proof to solve the entire problem.
-Initial Analysis and Memory's action_predictor_response is only a hint, not proof.
-Command/result pairs from executed tools count as proof.
+Initial Analysis and generated notes are hints. Executed calculator command/result pairs are proof.
 
 Before STOP, check:
 - What exact quantity does the problem ask for?
 - What exact quantity did the latest command compute?
-- Are they the same quantity?
-If you are not sure about confirming the above questions, output Conclusion: CONTINUE.
+- Do the executed results cover every required quantity?
 
 Context:
 - Problem: {question}
-- Initial Analysis: {analysis}
 - Memory: {memory}
 
 Rules:
-- First line must be Conclusion. Do not write any other Conclusion in the response.
-- Do not solve the problem or repeat the raw problem.
-- Analyse the missing logic if neccessary.
-- Follow the formats above. Response only one of the two formats below.
-- Do not write another Conclusion later.
+- First line must contain one Conclusion.
+- Return CONTINUE with the missing logic and next action when more evidence is required.
+- Return STOP when current memory supports the final answer.
 
-
-Response Format:
-Format1 (When memory not solves the entire problem):
+Response formats:
 Conclusion: CONTINUE
-Current memory can't solve the problem.
 Current issue: ...
-Next action:...
+Next action: ...
 <end>
 
-Format2 (Only when memory solves the entire problem):
 Conclusion: STOP
 Current memory solves the entire problem.
 <end>
-
-
-
-
-
 """
 
 
-def final_prompt(question: str, analysis: str, memory: dict[str, Any]) -> str:
+def final_prompt(question: str, memory: Any) -> str:
     return f"""
-Return the final numeric answer based on the comprehensive Analysis and Memory.
+Return the final numeric answer based on the Analysis and Memory.
 
-Problem:{question}
-Analysis: {analysis}
-Memory:{memory}
+Problem: {question}
+Memory: {memory}
 
 Rules:
-- Memory contains the previous sub-goals and command actions.
-- Memory may be unreliable because commands can be incomplete, repeated, or based on a wrong expression.
-- Check whether the commands cover every required quantity to solve the problem.
-- If Memory are complete and consistent, refer to the final relevant calculator result.
-- If Memory are incomplete or inconsistent, refer to the the problem and Analysis.
-- Do not explain.
+- Use executed calculator results as arithmetic evidence.
+- Complete any remaining reasoning from the problem and Analysis.
 - Output one number only.
 """
+
+
+__all__ = [
+    "BASE_GENERATOR_SYSTEM",
+    "CALCULATOR_TOOL_METADATA",
+    "EXECUTOR_SYSTEM",
+    "FINAL_SYSTEM",
+    "GSM8K_SYSTEM_PROMPT",
+    "PLANNER_SYSTEM",
+    "QUERY_SYSTEM",
+    "VERIFIER_SYSTEM",
+    "executor_prompt",
+    "final_prompt",
+    "planner_prompt",
+    "query_prompt",
+    "verifier_prompt",
+]

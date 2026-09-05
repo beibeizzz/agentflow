@@ -48,7 +48,10 @@ def supporting_fact_scores(
 
 
 def evaluate_research_answer(
-    prediction: ResearchFinalAnswer, example: DeepResearchExample
+    prediction: ResearchFinalAnswer,
+    example: DeepResearchExample,
+    *,
+    observed_citations: Iterable[Citation] | None = None,
 ) -> VerificationResult:
     answer_em, answer_precision, answer_recall, answer_f1 = answer_scores(
         prediction.answer, example.answer
@@ -69,18 +72,32 @@ def evaluate_research_answer(
         failures.append("ANSWER_MISMATCH")
     if sp_em == 0.0:
         failures.append("SUPPORTING_FACT_MISMATCH")
+    metrics = {
+        "answer_em": answer_em,
+        "answer_f1": answer_f1,
+        "supporting_fact_em": sp_em,
+        "supporting_fact_f1": sp_f1,
+        "joint_em": joint_em,
+        "joint_f1": joint_f1,
+    }
+    if observed_citations is not None:
+        predicted_facts = {(item.title, item.sentence_id) for item in prediction.citations}
+        observed_facts = {(item.title, item.sentence_id) for item in observed_citations}
+        grounded = len(predicted_facts & observed_facts)
+        metrics.update({
+            "observed_citation_count": float(len(observed_facts)),
+            "citation_grounded_fraction": (
+                grounded / len(predicted_facts) if predicted_facts else 0.0
+            ),
+            "citation_grounded_exact": float(
+                bool(predicted_facts) and predicted_facts <= observed_facts
+            ),
+        })
     return VerificationResult(
         success=joint_em == 1.0,
         reward=joint_f1,
         failure_codes=tuple(failures),
-        metrics={
-            "answer_em": answer_em,
-            "answer_f1": answer_f1,
-            "supporting_fact_em": sp_em,
-            "supporting_fact_f1": sp_f1,
-            "joint_em": joint_em,
-            "joint_f1": joint_f1,
-        },
+        metrics=metrics,
     )
 
 

@@ -34,11 +34,16 @@ class FinishArguments(ToolArguments):
     outcome: Literal["completed"]
 
 
+class BaseGeneratorArguments(ToolArguments):
+    pass
+
+
 def execute_tool(environment: TicketEnvironment, action: ToolAction) -> dict:
     schemas = {
         "Ticket_Query_Tool": QueryArguments,
         "Ticket_Update_Tool": UpdateArguments,
         "Ticket_Finish_Tool": FinishArguments,
+        "Base_Generator_Tool": BaseGeneratorArguments,
     }
     schema = schemas.get(action.tool_name)
     if schema is None:
@@ -51,4 +56,6 @@ def execute_tool(environment: TicketEnvironment, action: ToolAction) -> dict:
         return environment.query(arguments.lookup_by, arguments.value)
     if isinstance(arguments, UpdateArguments):
         return environment.update(arguments.ticket_id, arguments.field, arguments.value)
+    if isinstance(arguments, BaseGeneratorArguments):
+        return {"ok": False, "code": "EXTERNAL_GENERATOR_REQUIRED"}
     return environment.finish(arguments.ticket_id, arguments.outcome)

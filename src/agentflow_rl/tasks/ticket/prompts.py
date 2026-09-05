@@ -4,44 +4,52 @@ import json
 from typing import Any, Iterable
 
 
-TICKET_QUERY_ANALYSIS_SYSTEM_PROMPT = "Plan concise ticket workflows."
-TICKET_NEXT_STEP_SYSTEM_PROMPT = "Choose the next ticket tool call."
+TICKET_TOOL_SCHEMA = """Allowed tools:
+- Ticket_Query_Tool: arguments={"lookup_by":"ticket_id|customer_id|order_id","value":"..."}
+- Ticket_Update_Tool: arguments={"ticket_id":"...","field":"priority|assigned_team|status","value":"..."}
+- Ticket_Finish_Tool: arguments={"ticket_id":"...","outcome":"completed"}
+- Base_Generator_Tool: arguments={}
+Output exactly {"sub_goal":"...","tool_name":"...","arguments":{...}}."""
+
+TICKET_QUERY_ANALYSIS_SYSTEM_PROMPT = "Analyze the requested ticket workflow and required state transition."
+TICKET_PLANNER_SYSTEM_PROMPT = f"Plan one ticket action.\n{TICKET_TOOL_SCHEMA}"
+TICKET_EXECUTOR_SYSTEM_PROMPT = (
+    f"Validate and concretize the proposed ticket action while preserving tool_name.\n{TICKET_TOOL_SCHEMA}"
+)
+TICKET_VERIFIER_SYSTEM_PROMPT = """Judge progress from executed ticket-tool results in memory.
+Return STOP after the requested state update and a successful matching finish submission are present.
+Return CONTINUE with the next required action otherwise. End with Conclusion: STOP or Conclusion: CONTINUE."""
+TICKET_GENERATOR_SYSTEM_PROMPT = (
+    "Use the request, executed tool results, and verifier judgements to give a concise final status."
+)
+TICKET_BASE_GENERATOR_SYSTEM_PROMPT = (
+    "Analyze the supplied ticket state for the requested sub-goal. Output concise operational guidance."
+)
 
 TICKET_QUERY_ANALYSIS_PROMPT = """Summarize the ticket workflow in one short plan.
 User request: {question}
-Available tools: Ticket_Query_Tool, Ticket_Update_Tool, Ticket_Finish_Tool
+Available tools: Ticket_Query_Tool, Ticket_Update_Tool, Ticket_Finish_Tool, Base_Generator_Tool
 
 Rules:
-- Direct: update the ticket, then finish.
-- Indirect: query by customer_id or order_id, update the returned ticket, then finish.
-- Track only lookup key, target field/value, and finish outcome completed.
+- Direct workflow: update the ticket, then submit completion.
+- Indirect workflow: query by customer_id or order_id, update the returned ticket_id, then submit completion.
+- Track the lookup key, target field/value, and completed outcome.
 - Keep it concise.
 """
 
-TICKET_NEXT_STEP_PROMPT = """Next ticket action.
+TICKET_NEXT_STEP_PROMPT = """Choose the next ticket action.
 Request: {question}
-Plan: {analysis}
-Previous steps: {events}
-
-Choose exactly one tool.
-Return exactly one JSON object with exactly these top-level keys:
-{{
-  "tool_name": "Ticket_Query_Tool | Ticket_Update_Tool | Ticket_Finish_Tool",
-  "arguments": {{}}
-}}
-
-Argument formats:
-- Ticket_Query_Tool: {{"lookup_by": "ticket_id|customer_id|order_id", "value": "..."}}
-- Ticket_Update_Tool: {{"ticket_id": "...", "field": "priority|assigned_team|status", "value": "..."}}
-- Ticket_Finish_Tool: {{"ticket_id": "...", "outcome": "completed"}}
+Memory: {memory}
 
 Rules:
-- No previous step + ticket_id: use Ticket_Update_Tool.
-- No previous step + customer_id/order_id: use Ticket_Query_Tool.
-- If query OK: use Ticket_Update_Tool with result data.ticket_id.
-- If update OK: use Ticket_Finish_Tool with the same ticket_id.
-- Never repeat an OK query or update.
-- Output no markdown or prose.
+- A request containing ticket_id starts with Ticket_Update_Tool.
+- A request containing customer_id or order_id starts with Ticket_Query_Tool.
+- A successful query supplies data.ticket_id for Ticket_Update_Tool.
+- A successful update is followed by Ticket_Finish_Tool with the same ticket_id.
+- Base_Generator_Tool can analyze an unresolved sub-goal from current memory.
+- Preserve each successful query and update; choose the next unfinished action.
+
+{tool_schema}
 """
 
 
@@ -55,12 +63,51 @@ def _event_payload(event: Any) -> Any:
     return event
 
 
-def render_next_step_prompt(*, question: str, analysis: str, events: Iterable[Any]) -> str:
-    observations = json.dumps(
-        [_event_payload(event) for event in events], ensure_ascii=False, separators=(",", ": ")
-    )
+def render_next_step_prompt(
+    *,
+    question: str,
+    analysis: str,
+    events: Iterable[Any] | None = None,
+    memory: str | None = None,
+) -> str:
+    if memory is None:
+        memory = json.dumps(
+            {
+                "query_analysis": analysis,
+                "events": [_event_payload(event) for event in (events or ())],
+            },
+            ensure_ascii=False,
+            separators=(",", ": "),
+        )
     return TICKET_NEXT_STEP_PROMPT.format(
         question=question,
-        analysis=analysis,
-        events=observations,
+        memory=memory,
+        tool_schema=TICKET_TOOL_SCHEMA,
     )
+
+
+def render_executor_prompt(action: str, memory: str) -> str:
+    return f"Proposed action:\n{action}\n\nRelevant memory:\n{memory}"
+
+
+def render_verifier_prompt(question: str, memory: str) -> str:
+    return f"Request:\n{question}\n\nExecuted workflow memory:\n{memory}"
+
+
+def render_generator_prompt(question: str, memory: str) -> str:
+    return f"Request:\n{question}\n\nCompleted workflow memory:\n{memory}"
+
+
+__all__ = [
+    "TICKET_BASE_GENERATOR_SYSTEM_PROMPT",
+    "TICKET_EXECUTOR_SYSTEM_PROMPT",
+    "TICKET_GENERATOR_SYSTEM_PROMPT",
+    "TICKET_PLANNER_SYSTEM_PROMPT",
+    "TICKET_QUERY_ANALYSIS_SYSTEM_PROMPT",
+    "TICKET_VERIFIER_SYSTEM_PROMPT",
+    "render_executor_prompt",
+    "render_generator_prompt",
+    "render_next_step_prompt",
+    "render_query_analysis_prompt",
+    "render_verifier_prompt",
+]

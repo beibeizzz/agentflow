@@ -47,6 +47,11 @@ def test_all_experiment_configs_preserve_turn_gspo_contract() -> None:
             assert rollout["n"] >= 2
             assert rollout["agent"]["default_agent_loop"] == f"agentflow_{task}"
             assert "file" in config["trainer"]["logger"]
+            assert config["agentflow"]["role_max_tokens"] > 0
+            assert config["agentflow"]["prompt_reserve_tokens"] > 0
+            assert set(config["agentflow"]["memory_views"]) == {
+                "planner", "executor", "verifier", "generator", "base_generator"
+            }
 
 
 def test_gsm8k_executor_mode_is_explicit_and_formal_runs_use_legacy_llm() -> None:
@@ -76,6 +81,19 @@ def test_agent_loop_registry_targets_all_task_coroutines() -> None:
     }
 
 
+def test_all_task_loops_share_the_agentflow_runtime_contract() -> None:
+    from agentflow_rl.verl.agent_loops.base import AgentFlowLoopBase
+    from agentflow_rl.verl.agent_loops.coding import CodingAgentLoop
+    from agentflow_rl.verl.agent_loops.deepresearch import DeepResearchAgentLoop
+    from agentflow_rl.verl.agent_loops.gsm8k import GSM8KAgentLoop
+    from agentflow_rl.verl.agent_loops.ticket import TicketAgentLoop
+
+    for loop_type in (TicketAgentLoop, GSM8KAgentLoop, DeepResearchAgentLoop, CodingAgentLoop):
+        assert issubclass(loop_type, AgentFlowLoopBase)
+        assert callable(getattr(loop_type, "run"))
+        assert callable(getattr(loop_type, "role_memory_text"))
+
+
 def test_new_task_configs_preserve_confirmed_training_contract() -> None:
     for task in ("deepresearch", "coding"):
         for mode in ("baseline", "preflight", "train", "eval"):
@@ -100,11 +118,14 @@ def test_new_task_configs_preserve_confirmed_training_contract() -> None:
             assert rollout["n"] == (8 if mode == "preflight" else 6)
             assert rollout["log_prob_micro_batch_size_per_gpu"] == 1
             assert data["train_batch_size"] == 4
-            assert data["max_prompt_length"] == 4096
-            assert data["max_response_length"] == 1024
+            assert data["max_prompt_length"] == 8192
+            assert data["max_response_length"] == 2048
             assert agentflow["max_steps"] == 5
             assert agentflow["turn_mini_batch_size"] == 8
-            assert agentflow["role_max_tokens"] == 1024
+            assert agentflow["role_max_tokens"] == 2048
+            assert agentflow["prompt_reserve_tokens"] == 512
+            assert agentflow["memory_views"]["planner"]["max_tokens"] == 6144
+            assert agentflow["memory_views"]["executor"]["max_recent_entries"] == 4
             assert agentflow["frozen_model"] == "Qwen3-8B"
 
 
@@ -119,6 +140,7 @@ def test_remote_scripts_use_verl_entrypoint_and_two_gpu_split() -> None:
     ticket_train = (ROOT / "scripts" / "run_ticket_train.sh").read_text(encoding="utf-8")
     gsm8k_train = (ROOT / "scripts" / "run_gsm8k_train.sh").read_text(encoding="utf-8")
     assert "CUDA_VISIBLE_DEVICES=0" in server
+    assert 'MAX_MODEL_LEN:-10240' in server
     assert "CUDA_VISIBLE_DEVICES=1" in ticket_train
     assert "CUDA_VISIBLE_DEVICES=1" in gsm8k_train
     assert "python -m agentflow_rl.verl.main" in ticket_train
@@ -136,6 +158,8 @@ def test_local_single_gpu_smoke_uses_small_real_model_budget() -> None:
     assert config["data"]["max_response_length"] == 256
     assert config["data"]["dataloader_num_workers"] == 0
     assert config["agentflow"]["role_max_tokens"] == 256
+    assert config["agentflow"]["prompt_reserve_tokens"] == 256
+    assert config["agentflow"]["memory_views"]["planner"]["max_tokens"] == 384
     assert config["agentflow"]["max_steps"] == 2
     assert config["agentflow"]["turn_mini_batch_size"] == 8
     assert actor["ppo_mini_batch_size"] == 1

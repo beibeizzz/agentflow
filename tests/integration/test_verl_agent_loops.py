@@ -100,13 +100,18 @@ def test_ticket_agent_loop_returns_one_verl_output_per_real_planner_turn() -> No
     from agentflow_rl.verl.agent_loops.ticket import TicketAgentLoop
 
     responses = {
-        (11, 2): '{"tool_name":"Ticket_Update_Tool","arguments":{"ticket_id":"T-1","field":"priority","value":"high"}}',
-        (12, 2): '{"tool_name":"Ticket_Finish_Tool","arguments":{"ticket_id":"T-1","outcome":"completed"}}',
+        (11, 2): '{"sub_goal":"update target","tool_name":"Ticket_Update_Tool","arguments":{"ticket_id":"T-1","field":"priority","value":"high"}}',
+        (12, 2): '{"sub_goal":"submit completion","tool_name":"Ticket_Finish_Tool","arguments":{"ticket_id":"T-1","outcome":"completed"}}',
     }
+    update_action = responses[(11, 2)]
+    finish_action = responses[(12, 2)]
     loop = TicketAgentLoop(
         trainer_config=config(), server_manager=FakeServer([(11, 2), (12, 2)]),
         tokenizer=FakeTokenizer(responses), processor=None, dataset_cls=object,
-        data_config=SimpleNamespace(config={}), frozen_model=FakeFrozen(["plan"]),
+        data_config=SimpleNamespace(config={}), frozen_model=FakeFrozen([
+            "plan", update_action, "Update succeeded. Conclusion: CONTINUE",
+            finish_action, "Workflow completed. Conclusion: STOP", "completed",
+        ]),
     )
     outputs = asyncio.run(loop.run(
         {"temperature": 1.2, "top_p": 1.0, "top_k": -1, "logprobs": True},
@@ -117,7 +122,7 @@ def test_ticket_agent_loop_returns_one_verl_output_per_real_planner_turn() -> No
     assert outputs[0].reward_score is None
     assert outputs[-1].reward_score == 1.0
     assert outputs[0].response_ids == [11, 2]
-    assert outputs[1].extra_fields["terminal_reason"] == "finish_submitted"
+    assert outputs[1].extra_fields["terminal_reason"] == "verifier_stop"
     assert outputs[-1].extra_fields["reward_extra_info"]["success"] == 1.0
     assert all(output.extra_fields["valid_for_training"] for output in outputs)
 
@@ -127,12 +132,17 @@ def test_invalid_planner_output_is_not_counted_as_a_tool_call() -> None:
 
     loop = TicketAgentLoop(
         trainer_config=config(),
-        server_manager=FakeServer([(21, 2)]),
-        tokenizer=FakeTokenizer({(21, 2): "invalid action"}),
+        server_manager=FakeServer([(21, 2), (22, 2)]),
+        tokenizer=FakeTokenizer({(21, 2): "invalid action", (22, 2): "invalid again"}),
         processor=None,
         dataset_cls=object,
         data_config=SimpleNamespace(config={}),
-        frozen_model=FakeFrozen(["plan"]),
+        frozen_model=FakeFrozen([
+            "plan",
+            "A valid action is still required. Conclusion: CONTINUE",
+            "A valid action is still required. Conclusion: CONTINUE",
+            "workflow failed",
+        ]),
     )
 
     outputs = asyncio.run(loop.run(
@@ -144,7 +154,9 @@ def test_invalid_planner_output_is_not_counted_as_a_tool_call() -> None:
     ))
 
     assert outputs[0].metrics.tool_calls == 0.0
-    assert outputs[0].extra_fields["terminal_reason"] == "invalid_action"
+    assert len(outputs) == 2
+    assert outputs[-1].extra_fields["terminal_reason"] == "step_limit"
+    assert outputs[-1].reward_score == 0.0
 
 
 def test_gsm8k_agent_loop_restores_judge_memory_and_legacy_executor() -> None:
@@ -173,7 +185,7 @@ def test_gsm8k_agent_loop_restores_judge_memory_and_legacy_executor() -> None:
     assert len(outputs) == 1
     assert outputs[0].reward_score == 1.0
     memory = outputs[0].extra_fields["memory_actions"]
-    assert memory["Action Step 1"]["result"] == ["5"]
+    assert memory["Action Step 1"]["result"] == {"ok": True, "data": {"value": "5"}}
     assert memory["Action Step 1"]["judge"].startswith("Conclusion: STOP")
     assert frozen.calls[1]["think_mode"] == "off"
 
@@ -182,9 +194,9 @@ def test_ticket_indirect_agent_loop_preserves_query_update_finish_parity() -> No
     from agentflow_rl.verl.agent_loops.ticket import TicketAgentLoop
 
     responses = {
-        (41, 2): '{"tool_name":"Ticket_Query_Tool","arguments":{"lookup_by":"order_id","value":"O-2"}}',
-        (42, 2): '{"tool_name":"Ticket_Update_Tool","arguments":{"ticket_id":"T-2","field":"priority","value":"high"}}',
-        (43, 2): '{"tool_name":"Ticket_Finish_Tool","arguments":{"ticket_id":"T-2","outcome":"completed"}}',
+        (41, 2): '{"sub_goal":"find target","tool_name":"Ticket_Query_Tool","arguments":{"lookup_by":"order_id","value":"O-2"}}',
+        (42, 2): '{"sub_goal":"update target","tool_name":"Ticket_Update_Tool","arguments":{"ticket_id":"T-2","field":"priority","value":"high"}}',
+        (43, 2): '{"sub_goal":"submit completion","tool_name":"Ticket_Finish_Tool","arguments":{"ticket_id":"T-2","outcome":"completed"}}',
     }
     loop = TicketAgentLoop(
         trainer_config=config(),
@@ -193,7 +205,13 @@ def test_ticket_indirect_agent_loop_preserves_query_update_finish_parity() -> No
         processor=None,
         dataset_cls=object,
         data_config=SimpleNamespace(config={}),
-        frozen_model=FakeFrozen(["query, update, finish"]),
+        frozen_model=FakeFrozen([
+            "query, update, finish",
+            responses[(41, 2)], "Target found. Conclusion: CONTINUE",
+            responses[(42, 2)], "Update complete. Conclusion: CONTINUE",
+            responses[(43, 2)], "Workflow complete. Conclusion: STOP",
+            "completed",
+        ]),
     )
     outputs = asyncio.run(loop.run(
         {"temperature": 1.2, "top_p": 1.0, "top_k": -1, "logprobs": True},
@@ -250,6 +268,86 @@ def test_gsm8k_three_turn_agent_loop_passes_every_judge_to_next_prompt() -> None
     assert outputs[-1].extra_fields["memory_actions"]["Action Step 3"]["judge"].startswith(
         "Conclusion: STOP"
     )
+
+
+def test_gsm8k_agent_loop_exposes_base_generator_as_a_shared_tool() -> None:
+    from agentflow_rl.verl.agent_loops.gsm8k import GSM8KAgentLoop
+
+    action = (
+        '{"sub_goal":"derive the required equation","tool_name":"Base_Generator_Tool",'
+        '"arguments":{}}'
+    )
+    loop = GSM8KAgentLoop(
+        trainer_config=config(executor_mode="deterministic"),
+        server_manager=FakeServer([(91, 2)]),
+        tokenizer=FakeTokenizer({(91, 2): action}),
+        processor=None,
+        dataset_cls=object,
+        data_config=SimpleNamespace(config={}),
+        frozen_model=FakeFrozen([
+            "Derive the equation from the quantities.",
+            "The required equation is 2 + 3.",
+            "The reasoning is complete. Conclusion: STOP",
+            "5",
+        ]),
+    )
+
+    outputs = asyncio.run(loop.run(
+        {"temperature": 1.2, "top_p": 1.0, "top_k": -1, "logprobs": True},
+        uid="gsm-base-generator",
+        session_id=0,
+        extra_info={"episode_id": "g-base", "question": "What is 2 plus 3?", "gold_answer": "5"},
+        raw_prompt=[],
+    ))
+
+    event = outputs[-1].extra_fields["tool_events"][0]
+    assert event["tool_name"] == "Base_Generator_Tool"
+    assert event["result"]["data"] == "The required equation is 2 + 3."
+    assert outputs[-1].reward_score == 1.0
+
+
+def test_ticket_agent_loop_exposes_base_generator_through_shared_memory() -> None:
+    from agentflow_rl.verl.agent_loops.ticket import TicketAgentLoop
+
+    base_action = (
+        '{"sub_goal":"inspect the requested transition","tool_name":"Base_Generator_Tool",'
+        '"arguments":{}}'
+    )
+    update_action = (
+        '{"sub_goal":"update target","tool_name":"Ticket_Update_Tool",'
+        '"arguments":{"ticket_id":"T-1","field":"priority","value":"high"}}'
+    )
+    loop = TicketAgentLoop(
+        trainer_config=config(),
+        server_manager=FakeServer([(44, 2), (45, 2)]),
+        tokenizer=FakeTokenizer({(44, 2): base_action, (45, 2): update_action}),
+        processor=None,
+        dataset_cls=object,
+        data_config=SimpleNamespace(config={}),
+        frozen_model=FakeFrozen([
+            "Inspect, update, and submit completion.",
+            base_action,
+            "The priority transition is valid.",
+            "The update remains pending. Conclusion: CONTINUE",
+            update_action,
+            "Completion submission remains pending. Conclusion: CONTINUE",
+            "priority updated",
+        ]),
+    )
+
+    outputs = asyncio.run(loop.run(
+        {"temperature": 1.2, "top_p": 1.0, "top_k": -1, "logprobs": True},
+        uid="ticket-base-generator",
+        session_id=0,
+        extra_info=ticket_row(),
+        raw_prompt=[],
+    ))
+
+    events = outputs[-1].extra_fields["tool_events"]
+    assert events[0]["tool_name"] == "Base_Generator_Tool"
+    assert events[0]["result"]["data"] == "The priority transition is valid."
+    assert "The priority transition is valid." in outputs[1].extra_fields["planner_prompt"]
+    assert outputs[-1].reward_score == 0.0
 
 
 def test_episode_deadline_is_a_valid_zero_reward_sample_not_infrastructure_invalid() -> None:
@@ -310,17 +408,20 @@ def test_deepresearch_agent_loop_returns_joint_terminal_reward() -> None:
     from agentflow_rl.tasks.deepresearch.retrieval import InMemoryBM25Index, ResearchDocument
     from agentflow_rl.verl.agent_loops.deepresearch import DeepResearchAgentLoop
 
-    action = '{"sub_goal":"read evidence","tool_name":"Research_Read_Tool","arguments":{"doc_id":"paris"}}'
-    responses = {(71, 2): action}
+    search_action = '{"sub_goal":"find evidence","tool_name":"Research_Search_Tool","arguments":{"query":"capital France"}}'
+    read_action = '{"sub_goal":"read evidence","tool_name":"Research_Read_Tool","arguments":{"doc_id":"paris"}}'
+    responses = {(71, 2): search_action, (72, 2): read_action}
     frozen = FakeFrozen([
         "Find direct evidence for the capital.",
-        action,
+        search_action,
+        "Read the strongest result. Conclusion: CONTINUE",
+        read_action,
         "Evidence is sufficient. Conclusion: STOP",
         '{"answer":"Paris","report":"Paris is the capital.","citations":[{"title":"Paris","sentence_id":0}]}',
     ])
     loop = DeepResearchAgentLoop(
         trainer_config=config(),
-        server_manager=FakeServer([(71, 2)]),
+        server_manager=FakeServer([(71, 2), (72, 2)]),
         tokenizer=FakeTokenizer(responses),
         processor=None,
         dataset_cls=object,
@@ -345,10 +446,14 @@ def test_deepresearch_agent_loop_returns_joint_terminal_reward() -> None:
         raw_prompt=[],
     ))
 
-    assert len(outputs) == 1
+    assert len(outputs) == 2
     assert outputs[-1].reward_score == 1.0
     assert outputs[-1].extra_fields["verification"]["metrics"]["joint_f1"] == 1.0
+    assert outputs[-1].extra_fields["verification"]["metrics"]["citation_grounded_exact"] == 1.0
     assert outputs[-1].extra_fields["terminal_reason"] == "verifier_stop"
+    assert "paris" in outputs[1].extra_fields["planner_prompt"]
+    assert "Paris is the capital of France." in frozen.calls[4]["prompt"]
+    assert "Paris is the capital of France." in frozen.calls[5]["prompt"]
 
 
 def test_coding_agent_loop_uses_public_tools_and_hidden_terminal_tests() -> None:
@@ -356,17 +461,20 @@ def test_coding_agent_loop_uses_public_tools_and_hidden_terminal_tests() -> None
     from agentflow_rl.verl.agent_loops.coding import CodingAgentLoop
 
     code = "a, b = map(int, input().split())\\nprint(a + b)\\n"
-    action = '{"sub_goal":"write solution","tool_name":"Code_Write_Tool","arguments":{"code":"' + code + '"}}'
-    responses = {(81, 2): action}
+    write_action = '{"sub_goal":"write solution","tool_name":"Code_Write_Tool","arguments":{"code":"' + code + '"}}'
+    test_action = '{"sub_goal":"run public tests","tool_name":"Code_Run_Tests_Tool","arguments":{}}'
+    responses = {(81, 2): write_action, (82, 2): test_action}
     frozen = FakeFrozen([
         "Parse two integers and print their sum.",
-        action,
-        "The code is ready. Conclusion: STOP",
+        write_action,
+        "Run public tests for this code revision. Conclusion: CONTINUE",
+        test_action,
+        "The current revision passed all public tests. Conclusion: STOP",
         '{"code":"' + code + '"}',
     ])
     loop = CodingAgentLoop(
         trainer_config=config(),
-        server_manager=FakeServer([(81, 2)]),
+        server_manager=FakeServer([(81, 2), (82, 2)]),
         tokenizer=FakeTokenizer(responses),
         processor=None,
         dataset_cls=object,
@@ -389,8 +497,13 @@ def test_coding_agent_loop_uses_public_tools_and_hidden_terminal_tests() -> None
         raw_prompt=[],
     ))
 
-    assert len(outputs) == 1
+    assert len(outputs) == 2
     assert outputs[-1].reward_score == 1.0
     assert outputs[-1].extra_fields["verification"]["metrics"]["hidden_pass_rate"] == 1.0
+    assert '"code_revision": 1' in outputs[1].extra_fields["planner_prompt"]
+    assert '"tests_passed": true' in frozen.calls[4]["prompt"]
+    assert '"tests_passed": true' in frozen.calls[5]["prompt"]
+    assert frozen.calls[4]["prompt"].count("print(a + b)") == 1
+    assert frozen.calls[5]["prompt"].count("print(a + b)") == 1
     memory_text = str(outputs[-1].extra_fields["memory"])
     assert "8 9" not in memory_text

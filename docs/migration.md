@@ -3,6 +3,11 @@
 The review source remains the synchronized `main` checkout recorded in
 `NOTICE`. v3 preserves the experiment rather than the v2 framework.
 
+The current alpha extends that migration with a shared role-specific Memory
+contract, a full Ticket role loop, and Base Generator actions for Ticket and
+GSM8K. These changes require a fresh alpha baseline and define the current
+four-task runtime described in `docs/architecture.md`.
+
 | v2 component | v3 replacement |
 |---|---|
 | LangGraph task graphs | veRL `AgentLoopBase` coroutines |

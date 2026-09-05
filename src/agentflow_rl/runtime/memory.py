@@ -75,29 +75,63 @@ class MemoryStore:
         max_tokens: int,
         token_counter: Callable[[str], int] = approximate_token_count,
         required_tags: Iterable[str] = (),
+        required_latest_tags: Iterable[str] = (),
+        include_roles: Iterable[str] | None = None,
+        include_kinds: Iterable[str] | None = None,
+        max_recent_entries: int | None = None,
         header: str = "",
     ) -> MemoryView:
         if max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
+        if max_recent_entries is not None and max_recent_entries < 0:
+            raise ValueError("max_recent_entries must be non-negative")
+        allowed_roles = set(include_roles) if include_roles is not None else None
+        allowed_kinds = set(include_kinds) if include_kinds is not None else None
+        eligible = [
+            (index, entry)
+            for index, entry in enumerate(self._entries)
+            if (allowed_roles is None or entry.role in allowed_roles)
+            and (allowed_kinds is None or entry.kind in allowed_kinds)
+        ]
         wanted = set(required_tags)
         required = [
             (index, entry)
-            for index, entry in enumerate(self._entries)
+            for index, entry in eligible
             if wanted.intersection(entry.tags)
         ]
-        required_ids = {index for index, _ in required}
+        required_latest: list[tuple[int, MemoryEntry]] = []
+        for tag in required_latest_tags:
+            match = next(
+                (
+                    (index, entry)
+                    for index, entry in reversed(eligible)
+                    if tag in entry.tags
+                ),
+                None,
+            )
+            if match is not None:
+                required_latest.append(match)
+        required_ids = {index for index, _ in [*required, *required_latest]}
         recent = [
             (index, entry)
-            for index, entry in reversed(list(enumerate(self._entries)))
+            for index, entry in reversed(eligible)
             if index not in required_ids
         ]
+        if max_recent_entries is not None:
+            recent = recent[:max_recent_entries]
         selected: list[tuple[int, MemoryEntry]] = []
+        selected_ids: set[int] = set()
         used = token_counter(header) if header else 0
-        for index, entry in [*required, *recent]:
+        # Current state drives the next decision, so reserve it before stable
+        # episode identity and then fill the remaining budget with recent history.
+        for index, entry in [*required_latest, *required, *recent]:
+            if index in selected_ids:
+                continue
             rendered = entry.render()
             cost = token_counter(rendered)
             if used + cost <= max_tokens:
                 selected.append((index, entry))
+                selected_ids.add(index)
                 used += cost
         selected.sort(key=lambda pair: pair[0])
         sections = [header.strip()] if header.strip() else []
@@ -107,7 +141,7 @@ class MemoryStore:
             text=text,
             token_count=token_counter(text) if text else 0,
             included_entries=tuple(index for index, _ in selected),
-            omitted_entries=len(self._entries) - len(selected),
+            omitted_entries=len(eligible) - len(selected),
         )
 
 

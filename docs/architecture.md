@@ -24,26 +24,47 @@ task AgentLoops and the two semantic mismatches in `PPOTrainer`.
 
 ## Task flows
 
+Every task is a plugin over the same AgentFlow control contract:
+
+```text
+Frozen Query Analyzer -> trainable Planner -> frozen Executor -> task tool/environment
+  -> append-only shared Memory -> frozen Verifier -> next turn or STOP
+  -> frozen Generator -> deterministic terminal evaluator
+```
+
+Task plugins own their action schema, tools, environment state, role prompts,
+step budget, and terminal evaluator. `AgentFlowLoopBase` owns frozen-role calls,
+exact Planner rollout capture, prompt-budgeted role views, blocking-backend
+offload, and conversion to `AgentLoopOutput`. The veRL Trainer therefore remains
+unchanged when a task plugin is added.
+
 Ticket creates a fresh in-memory environment for every rollout session:
 
 ```text
 Frozen Query Analyzer
   -> Planner
-  -> direct: Update -> Finish
-  -> indirect: Query -> Update returned ticket_id -> Finish
+  -> Frozen Executor
+  -> direct: Update -> Verifier -> Finish -> Verifier STOP
+  -> indirect: Query -> Verifier -> Update returned ticket_id -> Verifier
+              -> Finish -> Verifier STOP
+  -> Frozen Generator
   -> deterministic binary verifier
 ```
 
-GSM8K preserves the reviewed role prompts and memory shape:
+`Ticket_Finish_Tool` records a domain-level completion submission. It has no
+control-flow authority; the frozen Verifier alone selects STOP or CONTINUE.
+`Base_Generator_Tool` is available for a bounded supporting analysis action.
+
+GSM8K retains the shared system prompt, legacy Planner/Executor output parsers,
+and reviewed task evaluator while using the common role and Memory contract:
 
 ```text
 Frozen Query Analyzer
   -> Planner
-  -> legacy_llm Executor or deterministic expression dispatch
-  -> Calculator
+  -> frozen Executor in formal runs, deterministic dispatch in smoke
+  -> Calculator or Base Generator
   -> Frozen Verifier
-  -> write response to Action Step N.judge
-  -> next Planner sees that judge
+  -> append tool result and judgement to shared Memory
   -> Frozen direct Generator
   -> numeric-match binary reward
 ```
@@ -54,7 +75,7 @@ DeepResearch uses the shared role loop with retrieval actions:
 
 ```text
 Frozen Query Analyzer -> Planner -> Frozen Executor -> Search/Read/Base Generator
-  -> Frozen Verifier -> shared Memory -> Frozen Generator
+  -> shared Memory -> Frozen Verifier -> Frozen Generator
   -> terminal answer/supporting-fact joint F1
 ```
 
@@ -63,12 +84,16 @@ uses the official introductory-Wikipedia Lucene index, and 2Wiki uses a
 separate Lucene index built from the benchmark's complete supplied contexts.
 Read actions return up to 20 sentences by default and preserve global sentence
 IDs; the Planner can request later pages with `start_sentence`.
+The benchmark answer/supporting-fact joint F1 remains the reward. Additional
+citation-grounding metrics report whether each generated citation appeared in
+an executed Read result, keeping retrieval behavior auditable under the
+outcome-only objective.
 
-Coding uses the same role loop with an isolated Python environment:
+Coding uses the shared role loop with an isolated Python environment:
 
 ```text
-Frozen Query Analyzer -> Planner -> Frozen Executor -> Write/Run/Inspect/Base Generator
-  -> Frozen Verifier -> shared Memory -> Frozen Generator
+Frozen Query Analyzer -> Planner -> Frozen Executor -> Write/Run Tests/Base Generator
+  -> shared Memory -> Frozen Verifier -> Frozen Generator
   -> terminal hidden-test pass rate
 ```
 
@@ -139,10 +164,27 @@ GSM8K/Ticket retain their reviewed actor settings. DeepResearch/Coding use one
 actor epoch and an eight-row Planner-turn mini-batch, with a one-row per-GPU
 micro-batch.
 
-Memory remains append-only for trajectory audit. Each role receives a bounded
-projection computed from the 4096-token prompt ceiling after reserving space
-for its system prompt, question, proposed action, and current code. This keeps
-all evidence in the saved trajectory while controlling actual model input.
+Memory remains append-only for trajectory audit. Every task uses the shared
+`MemoryStore`; each role receives a deterministic bounded projection after
+space is reserved for its system prompt, question, proposed action, and current
+task artifact. Coding retains every complete code revision and binds public-test
+results to a code revision and SHA-256. DeepResearch prioritizes the latest
+sentence-level Read evidence. Ticket prioritizes the latest visible ticket
+state. GSM8K prioritizes the latest executed arithmetic result.
+
+The role projections follow the original AgentFlow responsibility split:
+
+| Role | Memory input |
+|---|---|
+| Planner | query analysis, budgeted executed-tool history, verifier judgements, and guaranteed latest task state |
+| Executor | proposed Planner action, query analysis, latest task state, latest result, and latest judgement |
+| Verifier | query analysis, executed tool evidence, current state, and prior judgements |
+| Generator | query, module outputs, complete tool evidence, judgements, and current code for Coding |
+
+Verifier is the sole learned module that ends every role loop. Step and time
+budgets provide deterministic safety limits. Generator then composes the final
+task output from accumulated module state, and the terminal evaluator produces
+the only reward used by training.
 
 ## GPU topology
 

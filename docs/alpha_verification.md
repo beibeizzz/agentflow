@@ -1,6 +1,7 @@
 # Alpha Verification Record
 
-Verified on 2026-09-04. The deployment target is one Linux host with two A800
+Updated on 2026-09-05. The real GPU smoke evidence was produced on 2026-09-04.
+The deployment target is one Linux host with two A800
 80 GB GPUs, 22 logical CPU cores, 110 GB RAM, and the repository placed on the
 expanded data volume.
 
@@ -8,9 +9,9 @@ expanded data volume.
 
 | Check | Result | Evidence |
 |---|---:|---|
-| Python unit and fake-server integration tests | 130 passed | `python -m pytest -q` |
+| Python unit and fake-server integration tests | 145 passed | `python -m pytest -q` |
 | veRL native config validation | 17 passed | `scripts/remote/validate_all_configs.sh` |
-| Python compilation and Bash syntax | passed | `compileall`, `bash -n` |
+| Python compilation, Linux Bash syntax, and LF checkout policy | passed | `compileall`, WSL `bash -n`, `.gitattributes` |
 | Real Qwen3-0.6B vLLM + veRL AgentLoop smoke | exit 0 | `outputs/gsm8k/local_single_gpu_smoke/resume_20260904_b` |
 | Real GSPO actor-update probe | exit 0 | `outputs/gsm8k/local_single_gpu_smoke/actor_update_v2_20260904` |
 
@@ -33,7 +34,7 @@ advantage std was `1.0`, all six Planner turns entered the actor update,
 `actor/grad_norm` was `2.0630`, and `actor_update_skipped` was `0`. The run then
 saved its checkpoint and synchronized updated LoRA weights into vLLM. This
 stress ceiling is local verification input; formal task configs retain the
-specified 1024-token output ceiling.
+specified 2048-token output ceiling.
 
 ## DeepResearch execution contract
 
@@ -44,9 +45,12 @@ specified 1024-token output ceiling.
    sentence bounds, and source sentence text.
 4. Hotpot distractor preflight uses per-example local context; baseline, later
    curriculum stages, and final evaluation use their benchmark-specific index.
-5. Search and read results enter append-only Memory; the model prompt receives a
-   bounded projection under the 4096-token input ceiling.
+5. Search and read results enter append-only Memory; role-specific projections
+   select analysis, executed evidence, judgements, and final-generation context
+   under the 8192-token input ceiling.
 6. Terminal answer and supporting-fact F1 provide the trajectory reward.
+7. Citation-grounding diagnostics verify that generated title/sentence pairs
+   appeared in executed Read results.
 
 Run the two backend checks before GPU allocation:
 

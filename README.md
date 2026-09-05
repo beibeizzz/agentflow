@@ -8,19 +8,25 @@ task environments:
 - DeepResearch over HotpotQA and 2Wiki with BM25 retrieval and citation checks;
 - TACO-Verified Easy/Medium coding with Docker-isolated execution.
 
-GSM8K and Ticket preserve the reviewed v3 experiments. DeepResearch and Coding
-train separate `Qwen3-4B` Planner LoRA checkpoints while sharing frozen
+GSM8K and Ticket retain the reviewed data, environments, terminal evaluators,
+and GSPO settings while adopting the complete shared role loop and Base
+Generator action. DeepResearch and Coding train separate `Qwen3-4B` Planner
+LoRA checkpoints while sharing frozen
 `Qwen3-8B` role modules. See [alpha_deployment.md](docs/alpha_deployment.md) for
 data preparation, exact training parameters, and the two-GPU runbook.
 
-The experimental order remains unchanged: first measure the frozen AgentFlow
-baseline, then train only the Planner next-step LoRA with turn-level GSPO. There
-is no SFT stage.
+The role and prompt changes define a new rollout distribution. Baseline,
+training, and evaluation results for this alpha must come from the same commit.
+
+The experimental order first measures the frozen AgentFlow baseline and then
+trains the Planner next-step LoRA with turn-level GSPO directly from the selected
+base or post-trained checkpoint.
 
 ## Preserved research semantics
 
-- Query Analyzer, Verifier, Generator, tools, task environments, and GSM8K
-  legacy Executor are frozen.
+- Query Analyzer, Executor, Verifier, Generator, and Base Generator are frozen.
+- Deterministic tools and task environments expose typed observations through
+  the shared append-only Memory.
 - Only the Planner uses LoRA (`r=64`, `alpha=128`).
 - One rollout session is one complete multi-step trajectory.
 - A trajectory reward enters query-local mean/std exactly once.
@@ -31,6 +37,8 @@ is no SFT stage.
   turn-level rather than whole-trajectory GSPO.
 - GSM8K/Ticket use two PPO epochs; DeepResearch/Coding use one PPO epoch.
 - Ticket reward is binary and all formal splits are 50:50 direct:indirect.
+- Verifier controls role-loop termination; deterministic terminal evaluators
+  alone produce reward.
 
 GSM8K/Ticket use temperature `1.2` and GSPO clips `0.001/0.003`.
 DeepResearch/Coding use temperature `1.0` and GSPO clips `0.0003/0.0004`.
@@ -50,6 +58,8 @@ tests/                         pure, parity, and fake-server integration tests
 
 See [architecture.md](docs/architecture.md) for the exact control/data flow and
 [migration.md](docs/migration.md) for the v2-to-v3 mapping.
+The cross-task invariant audit is recorded in
+[framework_consistency_review.md](docs/framework_consistency_review.md).
 Local and remote acceptance evidence is tracked in
 [alpha_verification.md](docs/alpha_verification.md).
 The Chinese project guide starts at

@@ -5,18 +5,24 @@ are documented in the root README.
 
 ## Goal
 
-Build an independent veRL v0.8.0 implementation of the two verified v2
-experiments without changing their research semantics:
+Build an independent veRL v0.8.0 implementation of one reusable AgentFlow
+optimization framework across four terminally verifiable environments:
 
-1. run a frozen AgentFlow baseline;
-2. add LoRA only to Planner next-step generation;
-3. collect groups of complete trajectories for each query;
-4. compute binary-reward population-normalized advantages at trajectory level;
-5. expand each trajectory advantage to its real Planner turns;
-6. optimize each Planner turn with the asymmetric turn-level GSPO objective.
+1. preserve the original AgentFlow role loop and shared-memory semantics;
+2. express each task through its action schema, tools, environment, and terminal evaluator;
+3. run a frozen AgentFlow baseline;
+4. add LoRA only to Planner next-step generation;
+5. collect groups of complete trajectories for each query;
+6. compute terminal-reward population-normalized advantages at trajectory level;
+7. expand each trajectory advantage to its real Planner turns;
+8. optimize each Planner turn with the asymmetric turn-level GSPO objective.
 
-There is no SFT stage. Query Analyzer, Verifier, Generator, tools, task
-environments, and GSM8K legacy Executor remain frozen.
+GSM8K and Ticket preserve the verified v2 tasks. DeepResearch and Coding test
+the same optimization method on longer-horizon search and executable-code tasks.
+
+Planner checkpoints start directly from the selected Qwen checkpoint. Query
+Analyzer, Executor, Verifier, Generator, Base Generator, tools, and task
+environments remain frozen during RL.
 
 ## Version boundary
 
@@ -122,20 +128,53 @@ Formal baseline/train/eval use `legacy_llm`; smoke uses `deterministic`.
 ```text
 Frozen Query Analyzer
   -> Planner turn
-  -> isolated stateful tool environment
-  -> repeat until Finish/terminal
+  -> Frozen Executor
+  -> isolated stateful ticket tool environment or Frozen Base Generator
+  -> shared Memory
+  -> Frozen Verifier
+  -> repeat until Verifier STOP or the step limit
+  -> Frozen Generator
   -> deterministic binary verifier
 ```
 
 Direct is Update -> Finish. Indirect is Query -> Update returned ticket ->
-Finish. Every AgentLoop session creates a fresh environment.
+Finish. Finish records the domain submission; Verifier controls the loop. Every
+AgentLoop session creates a fresh environment.
+
+### DeepResearch
+
+```text
+Frozen Query Analyzer
+  -> Planner turn
+  -> Frozen Executor
+  -> local BM25/Lucene Search, Read, or Frozen Base Generator
+  -> shared Memory
+  -> Frozen Verifier
+  -> repeat until Verifier STOP or the step limit
+  -> Frozen Generator with citations
+  -> deterministic answer/supporting-fact evaluation
+```
+
+### Coding
+
+```text
+Frozen Query Analyzer
+  -> Planner turn
+  -> Frozen Executor
+  -> code write, public tests, or Frozen Base Generator
+  -> shared Memory
+  -> Frozen Verifier over revision-bound test evidence
+  -> repeat until Verifier STOP or the step limit
+  -> Frozen Generator
+  -> isolated hidden-test evaluation
+```
 
 ## Two-GPU remote topology
 
-The reference 2x40G topology remains:
+The reference topology uses 2x A800 80 GB:
 
-- GPU0: external frozen OpenAI-compatible vLLM server;
-- GPU1: veRL FSDP LoRA actor + colocated vLLM Planner rollout;
+- GPU 0: external frozen OpenAI-compatible vLLM server;
+- GPU 1: veRL FSDP LoRA actor plus colocated vLLM Planner rollout;
 - Ray sees only GPU1 for the veRL job;
 - frozen calls use the GPU0 HTTP endpoint.
 
