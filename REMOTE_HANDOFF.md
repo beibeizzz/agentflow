@@ -50,9 +50,10 @@ Each new-task preflight must contain:
 - a post-tool Planner prompt in the rollout dump;
 - a persisted actor checkpoint.
 
-Formal configuration keeps prompt batch `4`, rollout group `6`, initial
-Planner-turn mini-batch `8`, learning rate `1e-6`, KL coefficient `0`, five
-AgentFlow rounds, 4096 input tokens, and 1024 output tokens per role.
+Formal DeepResearch and Coding configuration keeps prompt batch `4`, rollout
+group `6`, initial Planner-turn mini-batch `8`, learning rate `1e-6`, KL
+coefficient `0`, five AgentFlow rounds, 8192 input tokens, and 2048 output
+tokens per role.
 
 ## Transfer integrity
 
