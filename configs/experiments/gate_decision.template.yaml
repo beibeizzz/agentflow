@@ -1,0 +1,32 @@
+schema_version: 1
+record_type: experiment_gate_decision
+protocol_id: null
+protocol_sha256: null
+gate_id: null
+stage: null
+run_ids: []
+decision: HOLD
+decided_at_utc: null
+owner: null
+evidence_window: {start_utc: null, end_utc: null, collection_first: null, collection_last: null, update_first: null, update_last: null}
+checks:
+  - check_id: replace_with_gate_check
+    metric_id: null
+    population: null
+    task_name: null
+    observed: null
+    numerator: null
+    denominator: null
+    threshold: null
+    comparison: null
+    result: unknown
+    evidence_path: null
+    evidence_sha256: null
+blocking_reasons: []
+research_observations: []
+required_next_actions: []
+recheck_gate_ids: []
+next_stage: null
+notes:
+  - Unknown required evidence keeps the decision at HOLD.
+  - Record protocol amendments before rerunning affected conditions.

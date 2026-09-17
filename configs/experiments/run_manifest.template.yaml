@@ -1,0 +1,103 @@
+schema_version: 1
+record_type: experiment_run_manifest
+status: planned
+protocol_id: null
+protocol_sha256: null
+run_id: null
+stage: null
+condition: null
+training_seed: null
+decoding_seeds: [1]
+started_at_utc: null
+finished_at_utc: null
+operator: null
+source_run_id: null
+source_artifact_sha256: null
+
+identity:
+  code_revision_or_source_tree_hash: null
+  upstream_revisions: {AgentFlow: null, agentflow_pro: null, Search_R1: null, verl: null}
+  environment_lock_sha256: null
+  resolved_config_sha256: null
+  command_file_sha256: null
+  initial_planner_weights_sha256: null
+  planner_tokenizer_sha256: null
+  frozen_weights_sha256: null
+  prm_weights_sha256: null
+  prm_tokenizer_sha256: null
+  prm_encoding_revision: null
+  process_rubric_revision: planner-progress-rubric-v1
+  prm_input_limit: null
+  judge_requested_model: null
+  judge_observed_revision: null
+  judge_prompt_sha256: null
+  role_prompt_revision: null
+  dataset_manifest_sha256: null
+  private_data_sha256: null
+  candidate_order_sha256: null
+  wikipedia_index_sha256: null
+  wikipedia_corpus_sha256: null
+  wikipedia_arrow_fingerprint: null
+  wikipedia_encoder_revision: null
+  wikipedia_benchmark_sha256: null
+  wikipedia_index_type: hnsw64
+  wikipedia_hnsw_m: 64
+  wikipedia_hnsw_ef_search: 256
+  wikipedia_faiss_version: null
+  public_sandbox_digest: null
+  private_sandbox_digest: null
+  evaluator_revision: null
+  initial_cache_snapshot_sha256: null
+  api_pricing_snapshot_sha256: null
+
+effective_seeds:
+  python: null
+  numpy: null
+  torch: null
+  actor_shuffle: null
+  rollout: null
+  candidate_order: null
+  first_prompt_ids_evidence: null
+
+budget:
+  candidate_prompt_batches_expected: null
+  collection_cap: null
+  total_epochs: null
+  save_interval_successful_updates: null
+  development_eval_interval_successful_updates: null
+  gpu_hours_max: null
+  api_usd_max: null
+
+completion:
+  collection_step: null
+  collection_batches: null
+  expected_collection_batches: null
+  data_epoch_complete: null
+  dynamic_epoch_tail_incomplete: null
+  successful_update: null
+  optimizer_step: null
+  final_checkpoint_path: null
+  final_checkpoint_sha256: null
+  resume_checkpoint_path: null
+  resume_checkpoint_sha256: null
+  failure_reason: null
+  early_termination_reason: null
+
+artifacts:
+  resolved_config: null
+  exact_command_file: null
+  dataset_manifest: null
+  private_evaluator_audit: null
+  collection_metrics: null
+  optimizer_metrics: null
+  backend_events: null
+  resource_samples: null
+  public_trajectories: null
+  development_evaluations: null
+  final_evaluation_samples: null
+  shared_evaluation_manifest: null
+  condition_evaluation_manifest: null
+  gate_decisions: []
+  failure_reports: []
+
+notes: []

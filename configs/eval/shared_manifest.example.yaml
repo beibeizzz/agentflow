@@ -1,0 +1,60 @@
+schema_version: "1"
+evaluation_id: formal-eval-v1
+input_paths:
+  - ../../data/verl/test_aime.parquet
+  - ../../data/verl/test_twowiki.parquet
+  - ../../data/verl/test_taco.parquet
+  - ../../data/verl/test_gpqa.parquet
+  - ../../data/verl/test_bigcodebench.parquet
+private_records_path: ../../data/private/all.jsonl
+seeds: [1]
+condition_planner_revisions:
+  E0_direct: qwen3-4b-posttrain-revision
+  E1_initial_agentflow: qwen3-4b-posttrain-revision
+  E2_terminal_rl: terminal-rl-checkpoint-revision
+  E3_terminal_prm_rl: terminal-prm-checkpoint-revision
+planner_model: Qwen3-4B-Planner
+frozen_model: Qwen3-8B
+frozen_revision: qwen3-8b-revision
+prompt_revision: unified-role-prompts-v5
+evaluator_revision: terminal-evaluators-v3-taco-spj-safe
+tool_contract_revision: shared-tools-v3
+serper_revision: serper-search-v1
+wikipedia_revision: wikipedia-18-index-revision
+wikipedia_index_type: hnsw64
+wikipedia_hnsw_m: 64
+wikipedia_hnsw_ef_search: 256
+wikipedia_index_sha256: replace-with-64-character-sha256
+wikipedia_corpus_sha256: replace-with-64-character-sha256
+wikipedia_arrow_fingerprint: replace-with-datasets-arrow-fingerprint
+wikipedia_encoder_revision: intfloat-e5-base-v2-revision
+wikipedia_benchmark_sha256: replace-with-64-character-sha256
+sandbox_image: agentflow-python-sandbox@sha256:replace
+bigcodebench_image: agentflow-bigcodebench-evaluator@sha256:replace
+bigcodebench_revision: bigcodebench-hard-revision
+decoding:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  direct_enable_thinking: true
+budgets:
+  retrieval_read_top_k: 2
+  retrieval_max_passages: 3
+  retrieval_max_source_chars: 4000
+  retrieval_read_timeout_s: 8.0
+  max_turns: 5
+  max_prompt_tokens: 4096
+  max_output_tokens: 1024
+  direct_max_output_tokens: 12288
+  frozen_max_prompt_tokens: 4096
+  frozen_generator_max_prompt_tokens: 8192
+  frozen_max_output_tokens:
+    query_analyzer: 1024
+    executor: 1024
+    verifier: 512
+    generator: 2048
+    base_generator: 768
+execution:
+  max_concurrency: 8
+  trajectory_timeout_s: 600.0
+  http_timeout_s: 120.0

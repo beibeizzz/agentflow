@@ -1,24 +1,50 @@
-from __future__ import annotations
-
-from enum import Enum
+"""Stable failure categories shared by tasks, tools, and training."""
 
 
-class FailureKind(str, Enum):
-    MODEL_VALID = "model_valid"
-    INFRASTRUCTURE_INVALID = "infrastructure_invalid"
+class AgentFlowError(Exception):
+    """Base error for the AgentFlow runtime."""
 
 
-class AgentFlowRuntimeError(Exception):
-    failure_kind: FailureKind
-
-
-class ModelValidError(AgentFlowRuntimeError):
-    failure_kind = FailureKind.MODEL_VALID
-
-
-class InfrastructureInvalidError(AgentFlowRuntimeError):
-    failure_kind = FailureKind.INFRASTRUCTURE_INVALID
+class ModelValidError(AgentFlowError):
+    """A model-visible failure that remains valid for optimization."""
 
 
 class ActionParseError(ModelValidError):
-    """The model response is not one strict structured action."""
+    """A generated action or final answer violates its public schema."""
+
+
+class ToolDispatchError(ModelValidError):
+    """A valid action requests an unregistered tool."""
+
+
+class InfrastructureError(AgentFlowError):
+    """A backend failure invalidates the rollout for optimization."""
+
+
+class RateLimitError(InfrastructureError):
+    """A shared external service rejected work because of rate limits."""
+
+
+class PromptBudgetError(InfrastructureError):
+    """Required model context cannot fit without losing essential input."""
+
+
+class RevisionMismatchError(InfrastructureError):
+    """A service response came from a different immutable environment revision."""
+
+
+class PrivacyBoundaryError(AgentFlowError):
+    """Evaluator-private content crossed into a model-visible record."""
+
+
+__all__ = [
+    "ActionParseError",
+    "AgentFlowError",
+    "InfrastructureError",
+    "ModelValidError",
+    "PrivacyBoundaryError",
+    "PromptBudgetError",
+    "RateLimitError",
+    "RevisionMismatchError",
+    "ToolDispatchError",
+]

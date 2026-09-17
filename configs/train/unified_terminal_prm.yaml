@@ -1,0 +1,177 @@
+algorithm:
+  adv_estimator: agentflow_grpo
+  use_kl_in_reward: false
+actor_rollout_ref:
+  model:
+    path: "${oc.env:PLANNER_MODEL_PATH}"
+    use_remove_padding: true
+    # Pinned veRL loads the HF actor with FlashAttention 2. Keep activation
+    # checkpointing explicit so resolved configs record the memory policy.
+    enable_gradient_checkpointing: true
+    # Planner-only PEFT. Freeze after pilot; keep the base checkpoint immutable.
+    lora_rank: 64
+    lora_alpha: 128
+    target_modules: all-linear
+  actor:
+    strategy: fsdp
+    ppo_epochs: 1
+    # Fixed outer PPO mini-batches; masked synthetic rows pad the selected turns
+    # to the next multiple of 32 without discarding any real Planner turn.
+    ppo_mini_batch_size: 32
+    # Preserve the runtime's balanced real/padding key order across optimizer steps.
+    shuffle: false
+    ppo_micro_batch_size_per_gpu: 2  # Static-mode fallback; dynamic mode uses tokens.
+    use_dynamic_bsz: true
+    # Dynamic micro-batches target this token load; preflight records the peak.
+    ppo_max_token_len_per_gpu: 40960
+    clip_ratio_low: 0.0003
+    clip_ratio_high: 0.0004
+    use_kl_loss: false
+    entropy_coeff: 0.0
+    policy_loss: {loss_mode: gspo}
+    optim: {lr: 0.000001}
+  rollout:
+    name: vllm
+    n: 5
+    log_prob_micro_batch_size_per_gpu: 1
+    log_prob_use_dynamic_bsz: true
+    log_prob_max_token_len_per_gpu: 40960
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    repetition_penalty: 1.0
+    calculate_log_probs: true
+    tensor_model_parallel_size: 1
+    gpu_memory_utilization: 0.50
+    max_model_len: 5120
+    max_num_seqs: 24
+    enable_sleep_mode: true
+    agent:
+      default_agent_loop: agentflow_unified
+      agent_loop_config_path: configs/agent_loops.yaml
+      num_workers: 4
+data:
+  train_files: [data/verl/train_mixed.parquet]
+  val_files: [data/verl/development_mixed.parquet]
+  train_batch_size: 4
+  gen_batch_size: 8
+  val_batch_size: 4
+  max_prompt_length: 4096
+  max_response_length: 1024
+  dataloader_num_workers: 0
+  shuffle: false
+reward: {reward_model: {enable: false}}
+trainer:
+  n_gpus_per_node: 1
+  nnodes: 1
+  logger: [console]
+  project_name: agentflow_beta
+  experiment_name: unified_terminal_prm
+  val_before_train: true
+  resume_mode: auto
+  # null lets pinned veRL derive the scheduler bound from len(dataloader) * epochs.
+  # AgentFlow completes after consuming the configured data epochs.
+  total_epochs: 1
+  total_training_steps: null
+  save_freq: 20
+  test_freq: 20
+  rollout_data_dir: outputs/train/unified_terminal_prm/rollouts
+  default_local_dir: outputs/train/unified_terminal_prm
+transfer_queue:
+  backend:
+    storage_backend: SimpleStorage
+    SimpleStorage: {num_data_storage_units: 1, total_storage_size: 100000}
+agentflow:
+  # Collection safety cap, including skipped updates; exhaustion fails the run.
+  max_collection_steps: 1000
+  environment_mode: formal
+  policy_identity_path: ${trainer.default_local_dir}/policy_identity.json
+  planner_revision: "${oc.env:PLANNER_REVISION}"
+  frozen_base_url: http://127.0.0.1:8001/v1
+  frozen_model: Qwen3-8B
+  frozen_max_input_tokens: 4096
+  role_max_input_tokens:
+    query_analyzer: 4096
+    executor: 4096
+    verifier: 4096
+    generator: 8192
+  frozen_tokenizer_path: "${oc.env:FROZEN_MODEL_PATH}"
+  frozen_revision: "${oc.env:FROZEN_MODEL_REVISION}"
+  private_records_path: data/private/all.jsonl
+  max_turns: 5
+  role_max_tokens:
+    query_analyzer: 1024
+    executor: 1024
+    verifier: 512
+    generator: 2048
+  query_analyzer_cache:
+    enabled: true
+    path: outputs/cache/query_analyzer.sqlite3
+    namespace: query-analyzer-v1
+    lock_timeout_s: 120.0
+  trajectory_timeout_s: 600
+  trajectory_artifact_dir: outputs/trajectories
+  http_timeout_s: 120
+  lambda_process: 0.30
+  max_advantage: 5.0
+  turn_mini_batch_size: 32
+  dynamic_sampling:
+    enabled: true
+    # Community DAPO semantics: data.train_batch_size is the qualified-group
+    # target and data.gen_batch_size is the candidate generation batch.
+    metric: terminal_reward
+    max_num_gen_batches: 10
+    balance_window_steps: 3
+  process_reward:
+    rubric_revision: planner-progress-rubric-v1
+    mode: prm
+    backend: vllm
+    endpoint: http://127.0.0.1:8003/score
+    revision: "${oc.env:PRM_REVISION}"
+    # The central PRM wrapper merges concurrent AgentLoop requests before one
+    # vLLM pooling call, reducing small-kernel contention with the 8B server.
+    batch_max_size: 32
+    batch_wait_ms: 10.0
+    batch_max_queue: 256
+    max_missing_rate: 0.05
+    require_each_task: true
+  tools:
+    # Pilot-tunable; freeze identically across active E1-E3 before final evaluation.
+    retrieval_read_top_k: 2
+    retrieval_max_passages: 3
+    retrieval_max_source_chars: 4000
+    retrieval_read_timeout_s: 8.0
+    coordination_dir: /tmp/agentflow-locks
+    sandbox_image: "${oc.env:SANDBOX_IMAGE}"
+    sandbox_service_url: http://127.0.0.1:8005
+    sandbox_service_revision: python-sandbox-service-v1
+    sandbox_service_timeout_s: 30.0
+    sandbox_cpus: 1
+    sandbox_memory: 1g
+    sandbox_output_limit_bytes: 1000000  # stdout + stderr; streamed on host and in public runner
+    sandbox_max_concurrency: 6
+    sandbox_max_queue: 34  # six active plus 34 waiting covers all 40 trajectory coroutines
+    sandbox_max_reuses: 64  # rotate a clean worker after 64 successful assignments
+    sandbox_queue_admission_timeout_s: 0.05
+    bigcodebench_image: "${oc.env:BIGCODEBENCH_IMAGE}"
+    bigcodebench_revision: "${oc.env:BIGCODEBENCH_REVISION}"
+    bigcodebench_max_concurrency: 2
+    bigcodebench_output_limit_bytes: 1000000  # host Docker protocol output
+    serper_key_env: SERPER_API_KEY
+    serper_revision: serper-search-v1
+    serper_cache_path: outputs/cache/serper.sqlite3
+    serper_max_concurrency: 40
+    web_reader_max_concurrency: 12
+    serper_max_attempts: 3
+    serper_backoff_s: 0.5
+    serper_cost_per_request_usd: 0.001
+    wikipedia_service_url: http://127.0.0.1:8002
+    wikipedia_revision: "${oc.env:WIKIPEDIA_INDEX_REVISION}"
+    wikipedia_max_concurrency: 4
+    wikipedia_max_queue: 40
+    wikipedia_batch_max_size: 16
+    wikipedia_batch_wait_ms: 5.0
+    wikipedia_index_type: hnsw64
+    wikipedia_hnsw_m: 64
+    wikipedia_hnsw_ef_search: 256
+    base_generator_max_tokens: 768

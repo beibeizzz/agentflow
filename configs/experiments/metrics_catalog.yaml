@@ -1,0 +1,403 @@
+schema_version: 1
+catalog_id: agentflow-experiment-metrics-v1
+purpose: recording_contract_not_automatic_instrumentation
+availability_legend:
+  native: Existing output or artifact contains the indicated value; archive it under the run identity.
+  derived: Compute offline from indicated raw records with the specified population and denominator.
+  required_capture: Capture additional raw values or join existing events before G3; do not assume current files contain them.
+  conditional: Report only when the required observation exists; otherwise use null and a reason.
+record_contract:
+  common_keys: [protocol_id, run_id, stage, condition, training_seed, timestamp_utc, metric_id, value, unit, population]
+  optional_dimensions: [task_name, task_id, prompt_group_id, trajectory_id, turn_index, decoding_seed, attempt_id, role, tool_name, backend_revision, device_id]
+  training_counters: [candidate_batch, collection_step, successful_update, optimizer_step, data_epoch_complete]
+  populations: [candidate, retained, all_attempts, model_valid, prm_dev, development, common_valid_evaluation, full_planned_evaluation]
+  ratio_fields: [numerator, denominator]
+  missing_fields: [missing_reason]
+  provenance_fields: [source_path, source_sha256, aggregation_version]
+  null_policy: Missing or undefined values are null with a reason; observed zero is a numeric zero.
+  distributions: [count, mean, std, min, p01, p10, p50, p90, p99, max]
+  rate_aggregation: sum_numerators_divided_by_sum_denominators
+  latency_aggregation: retain_samples_and_report_mean_p50_p95_p99
+  private_boundary: Evaluator-private data stays in a separate audit store; public records reference only authorized aggregate results.
+
+metrics:
+  - id: run.identity_consistency
+    unit: violations
+    grain: run_start_resume_checkpoint
+    availability: required_capture
+    definition: Count mismatches in frozen code/config/data/model/tokenizer/prompt/image/index identities against the protocol.
+    source: run_manifest_and_artifact_hashes
+    gate: zero
+  - id: run.seed_effectiveness
+    unit: verified_mappings
+    grain: run_start
+    availability: required_capture
+    definition: Effective Python/NumPy/Torch/actor-shuffle/rollout/data-order seeds and first prompt IDs; pair corresponding conditions within training seed.
+    source: resolved_config_runtime_rng_and_candidate_order
+  - id: run.private_leakage
+    unit: violations
+    grain: each_artifact_and_prompt
+    availability: required_capture
+    definition: Hidden answers/tests detected outside the terminal Evaluator boundary, or source 2Wiki supporting facts retained in prepared records.
+    source: privacy_audit
+    gate: zero
+  - id: train.counters
+    unit: count
+    grain: every_collection_and_optimizer_step
+    availability: required_capture
+    definition: Record B candidate prompt batches, C DAPO selection attempts, U completed actor update rounds, and O actual optimizer steps separately.
+    native_mapping: {B: agentflow/collection_batch_count, C: training/global_step, U: agentflow/successful_update_count, O_per_update: agentflow/actor_optimizer_step_count}
+    source: trainer_metrics_checkpoint_state_and_actor_optimizer_events
+    note: B counts candidate prompt batches; C counts DAPO selection attempts. Sum O_per_update for run-level O and cross-check it against actor worker optimizer events; do not infer B, U, or O from checkpoint directory numbering.
+  - id: train.completed_data_epoch
+    unit: boolean
+    grain: run_end
+    availability: derived
+    definition: data_epoch_complete is true, collected prompt batches equal the frozen one-epoch count, and the final checkpoint hash is valid.
+    source: agentflow_state.json_and_run_manifest
+  - id: train.group_counts
+    unit: prompt_groups
+    grain: every_collection
+    availability: native
+    definition: Candidate, informative, kept and dropped group counts, with the effective rollout group size.
+    native_mapping:
+      candidate: agentflow/dynamic_candidate_group_count
+      informative: agentflow/dynamic_informative_group_count
+      filtered: agentflow/dynamic_filtered_group_count
+      discarded_qualified: agentflow/dynamic_discarded_qualified_group_count
+      kept: agentflow/dynamic_kept_group_count
+      dropped: agentflow/dynamic_dropped_group_count
+      target: agentflow/dynamic_target_group_count
+      complete: agentflow/dynamic_sampling_complete
+    source: agentflow_metrics/step_C.json
+  - id: train.complete_group_rate
+    unit: fraction
+    grain: collection_by_task
+    availability: required_capture
+    definition: Groups containing all five model-valid trajectories with contiguous turns divided by all candidate groups; report rejection reasons separately.
+    source: candidate_group_and_trajectory_records
+  - id: train.update_yield
+    unit: fraction
+    grain: rolling_20_collections_and_run
+    availability: derived
+    definition: Successful actor update rounds divided by all completed collection rounds in the window.
+    source: train.counters
+  - id: train.skip_rate
+    unit: fraction
+    grain: rolling_20_collections_and_run
+    availability: derived
+    definition: Collections with actor_update_skipped=1 divided by completed collections; classify scorer/freshness/variance/quota causes.
+    native_mapping: {skipped: agentflow/actor_update_skipped}
+    source: agentflow_metrics_and_selection_plan
+  - id: train.task_balance
+    unit: prompt_groups
+    grain: every_collection_and_three_successful_updates
+    availability: native
+    definition: Retained AIME/2Wiki/TACO groups; expected 4/4/4 across a complete three-update window. Candidate exposure is also required.
+    native_mapping: {aime: agentflow/dynamic_kept_aime, twowiki: agentflow/dynamic_kept_twowiki, taco: agentflow/dynamic_kept_taco}
+    source: agentflow_metrics_and_candidate_task_ids
+  - id: train.actual_rows
+    unit: planner_turn_rows
+    grain: every_collection
+    availability: native
+    definition: Candidate rows, selected old-log-prob rows, real actor rows, padding rows, padded total, fixed mini-batch size and minimum/maximum real rows per optimizer step; separately capture zero-advantage retained rows.
+    native_mapping: {candidate: agentflow/candidate_turn_row_count, old_log_prob: agentflow/old_log_prob_row_count, real_actor: agentflow/actor_real_turn_count, padded_actor: agentflow/actor_padded_turn_count, padding: agentflow/actor_padding_turn_count, padding_fraction: agentflow/actor_padding_fraction, mini_batch: agentflow/actor_turn_mini_batch_size, min_real_per_step: agentflow/actor_min_real_turns_per_step, max_real_per_step: agentflow/actor_max_real_turns_per_step}
+    source: agentflow_metrics_and_selected_batch
+  - id: train.key_consistency
+    unit: violations
+    grain: every_actor_update
+    availability: required_capture
+    definition: Exact selected key set and ordered mapping agree across old-log-prob, advantage lookup and actor update; capture hashes and audit samples.
+    source: selected_batch_keys_at_each_stage
+    gate: zero
+  - id: train.policy_freshness
+    unit: update_lag
+    grain: every_planner_generation
+    availability: required_capture
+    definition: Actor expected update ID and independently returned loaded server update ID must agree; retain revision and collection identity.
+    native_mapping: {aggregate_pass: agentflow/rollout_policy_fresh}
+    source: PlannerGeneration_and_rollout_metadata_and_sync_events
+    gate: zero
+  - id: train.terminal_reward
+    unit: score_0_1
+    grain: trajectory_by_task_and_population
+    availability: native
+    definition: One terminal reward per completed trajectory; report candidate and retained distributions independently.
+    source: trajectory_verification_and_selection_membership
+  - id: train.zero_variance
+    unit: prompt_groups_or_prompt_turn_cells
+    grain: every_collection
+    availability: native
+    definition: Terminal zero-variance groups and supported/unsupported process normalization cells.
+    native_mapping:
+      terminal: agentflow/terminal_zero_variance_group_count
+      process_supported: agentflow/process_supported_cell_count
+      process_unsupported: agentflow/process_unsupported_cell_count
+    source: advantage_metrics
+  - id: train.advantage_components
+    unit: advantage
+    grain: planner_turn_by_task_and_turn_index
+    availability: required_capture
+    definition: Terminal, unweighted process, lambda-weighted process, pre-clip combined and final combined advantages; retain normalization group/cell identity.
+    source: AdvantageResult_and_reward_rows_before_actor_update
+    note: Capture component values before temporary batch data is cleared.
+  - id: train.credit_diagnostics
+    unit: fractions_and_ratios
+    grain: update_by_task
+    availability: derived
+    definition: Fraction of turns whose sign changes after process credit, fraction clipped at A_max, and mean abs(lambda*A_process)/(mean abs(A_terminal)+epsilon).
+    source: train.advantage_components
+  - id: train.gspo_loss
+    unit: loss
+    grain: optimizer_step_and_successful_update
+    availability: required_capture
+    definition: Sequence-level GSPO loss using the actual turn mini-batch; store worker-native metric name and aggregation convention.
+    source: actor_worker_loss_metrics
+  - id: train.sequence_ratio
+    unit: ratio
+    grain: optimizer_step_and_successful_update
+    availability: required_capture
+    definition: exp(mean_over_response_tokens(log_pi_new-log_pi_old)) per Planner sequence; summarize full distribution and outside-clip fraction.
+    source: actor_sequence_log_probs_and_response_masks
+  - id: train.optimization_health
+    unit: mixed
+    grain: optimizer_step_and_successful_update
+    availability: required_capture
+    definition: Gradient norm, LR, response-token entropy, nonfinite count and actual clipping statistics; record each subfield unit and convention.
+    source: actor_worker_metrics
+    gate: nonfinite_count_zero
+    note: KL regularization remains zero; any logged drift diagnostic is observational.
+  - id: train.stage_duration
+    unit: seconds
+    grain: every_collection
+    availability: required_capture
+    definition: Rollout, frozen-role calls, tools, Evaluator, PRM/Judge, selection, old-log-prob, actor update, checkpoint, synchronization and development evaluation durations.
+    source: native_timing_raw_and_backend_spans
+    note: Overlapping spans are not added as though sequential; record wall-clock and cumulative service time separately.
+
+  - id: process.score_and_availability
+    unit: score_0_1_and_fraction
+    grain: every_eligible_turn_by_task
+    availability: required_capture
+    definition: Raw score/confidence/reason or missing reason. Missing rate denominator is all turns requiring scores in valid candidate trajectories before selection.
+    native_mapping: {global_rate: agentflow/process_missing_rate, available: agentflow/process_available_turn_count}
+    source: rollout_extra_fields_and_scorer_events
+    gate: global_missing_rate_le_0point05_and_each_present_task_supported
+    note: Recompute task counts from actual task-name values; retain successful score zero as available.
+  - id: process.normalization_support
+    unit: fractions
+    grain: prompt_turn_cell_by_task
+    availability: derived
+    definition: Cells with at least two valid scores and supported variance; separate singleton, all-missing and zero-variance causes.
+    source: raw_process_scores_and_turn_indices
+  - id: process.label_quality
+    unit: fractions
+    grain: label_batch_by_task
+    availability: required_capture
+    definition: Schema validity, final missing rate, duplicates, repeated-label consistency and severe human-audit error rate; include denominators and audit sampling seed.
+    source: label_API_events_and_blinded_human_audit
+  - id: process.prm_validation
+    unit: score_and_correlation
+    grain: prm_dev_by_task_and_macro
+    availability: native
+    definition: MAE, Spearman and 10-bin calibration error against offline labels; add the per-task train-label-mean constant predictor baseline.
+    native_mapping: {mae: mae, spearman: spearman, calibration_error: calibration_error}
+    source: prm_predictions_targets_prompt_split_and_eval_metrics.json
+    note: Native calibration is agreement with soft labels; it does not estimate task success probability.
+  - id: process.same_cell_ranking
+    unit: fraction
+    grain: prm_dev_same_prompt_same_turn
+    availability: derived
+    definition: Ordering agreement on pairs from the same prompt and turn with unequal labels; report ties, pair count and prompt-cluster uncertainty.
+    source: prm_predictions_labels_prompt_ids_and_turn_indices
+    note: Existing generic pairwise_ranking_accuracy compares a broader pair population; use this explicit grouping for G2.
+  - id: process.input_preservation
+    unit: tokens_and_violations
+    grain: every_prm_input
+    availability: required_capture
+    definition: Encoded token count, special-token count, retained current fields, compacted field names, omitted history events and actual tokenizer revision.
+    source: shared_PRM_encoder_boundary
+    gate: required_fields_present_and_tokens_le_8192
+  - id: process.reward_alignment_audit
+    unit: score_and_fraction
+    grain: fixed_public_transition_audit_by_checkpoint
+    availability: required_capture
+    definition: PRM/online-Judge/held-out-audit-Judge agreement, high-process-low-terminal rate, repeated-action scores and empty-action scores.
+    source: fixed_train_or_development_audit_samples
+    note: Terminal outcomes remain offline diagnostics; scoring inputs remain canonical public transitions.
+
+  - id: system.model_errors
+    unit: fraction
+    grain: trajectory_and_turn_by_task
+    availability: derived
+    definition: Invalid Planner action, Executor action mismatch, invalid Verifier output, final parse failure, code compile/runtime error and wrong answer; separate from infrastructure.
+    source: public_memory_tool_results_and_evaluation_failure_codes
+  - id: system.infrastructure_failures
+    unit: fraction
+    grain: rolling_window_by_task_and_backend
+    availability: required_capture
+    definition: Invalid trajectories divided by all attempted trajectories; additionally report request-level timeout/429/5xx/network/container/service failures.
+    source: all_attempts_and_backend_events
+    gate: natural_trajectory_failure_rate_le_0point01
+    note: Fault-injection traffic and model-caused code failures have separate populations.
+  - id: system.context_budget
+    unit: tokens_and_fractions
+    grain: every_role_call
+    availability: required_capture
+    definition: Full role-input tokens, Memory-view tokens, output tokens, compacted/omitted events and mandatory event IDs/hashes; classify context-overflow failures.
+    source: role_projector_model_tokenizer_and_API_usage
+    gate: mandatory_context_violation_zero
+  - id: system.behavior
+    unit: counts_and_fractions
+    grain: trajectory_by_task
+    availability: derived
+    definition: Planner turns, tool calls and tool distribution, repeated identical requests, finish/continue decisions, turn-limit rate and final-answer completion rate.
+    source: public_trajectory_memory_and_tool_request_hashes
+  - id: system.role_tokens
+    unit: tokens
+    grain: every_model_request
+    availability: required_capture
+    definition: Input/output/cached tokens by direct model, Planner, Analyzer, Executor, Verifier, Generator, Base Generator, PRM and Judge.
+    source: model_API_usage_or_actual_tokenizer
+    note: E0 planner_tokens=0 is a role placeholder; capture direct model usage independently.
+  - id: system.tool_usage
+    unit: counts_and_latency_ms
+    grain: every_tool_request
+    availability: native
+    definition: Tool identity, execution arguments, status, revision, request/result hashes and end-to-end latency; record internal search/read/run/test/generate calls and capture queue time separately.
+    source: ToolRequest_ToolResult_and_backend_events
+  - id: system.internal_workload
+    unit: counts_tokens_and_latency_ms
+    grain: trajectory
+    availability: native
+    definition: Recorded backend calls by search/read/run/test/generate stage, logical frozen-role requests, physical frozen-model calls, Query Analyzer cache hits, local tokenizer input/output counts, missing counts and dispatch failures with incomplete accounting.
+    source: trajectory_artifact.execution_metrics_and_evaluation_sample.execution_metrics
+    note: Parallel backend latency sums describe work; tool latency describes elapsed time. Service retries, cancelled requests and billing require service logs. Missing token counts remain explicit.
+  - id: system.frozen_inference_scheduling
+    unit: counts_fractions_and_latency_ms
+    grain: service_window_and_training_step
+    availability: required_capture
+    definition: Query Analyzer cache requests/hits/misses/wait time, one shared 8B server request count and queue latency by role, PRM submitted transition count, backend batch count, realized PRM batch-size distribution, peak pending requests and mean/maximum PRM backend-batch latency.
+    source: trajectory_model_call_events_frozen_vllm_metrics_and_prm_health_metrics
+    gate: one_frozen_8B_server_analyzer_cache_reuse_observed_and_prm_realized_batch_size_recorded
+  - id: system.search_and_retrieval
+    unit: counts_fractions_and_latency_ms
+    grain: request_by_backend
+    availability: required_capture
+    definition: Queries, retrieved documents, empty hits, reads, retries, 429/5xx, persistent cache hit rate, in-flight duplicate merges, Serper/page-reader queue wait, fetched page bytes and extraction time, Wikipedia collection delay and actual E5/FAISS batch-size distribution, index revision, response timestamp and payload hashes.
+    source: Serper_Wikipedia_and_page_reader_events
+  - id: system.wikipedia_index_quality
+    unit: counts_recall_seconds_and_bytes
+    grain: frozen_index_and_four_way_preflight
+    availability: required_capture
+    definition: Canonical corpus and index row counts, corpus SHA-256, Arrow fingerprint, HNSW recall@10 against exact Flat, warm p50/p95 search latency, loaded resident memory, index settings, FAISS version and artifact hashes.
+    source: wikipedia_hnsw_benchmark_index_manifest_service_health_and_host_monitor
+    gate: corpus_identity_and_row_counts_match_recall_at_10_ge_0point97_p95_le_1s_host_free_ge_32GiB
+  - id: system.sandbox
+    unit: counts_seconds_and_bytes
+    grain: container_execution
+    availability: required_capture
+    definition: Host concurrency, queue wait, container create/start/run/cleanup duration, image digest, 1-CPU/1-GiB resource limits, peak RSS, cgroup OOM, exit status, timeout cleanup and private/public harness identity.
+    source: Docker_backend_and_host_monitor
+    gate: configured_concurrency_limits_respected
+  - id: resources.gpu
+    unit: MiB_percent_and_seconds
+    grain: device_every_0point5_seconds_and_stage_boundary
+    availability: required_capture
+    definition: NVML device used/total/free memory and utilization plus allocator allocated/reserved peaks and retry/OOM counts when available.
+    source: GPU_monitor_and_PyTorch_worker_metrics
+    gate: peak_lt_76800_MiB_and_free_ge_5120_MiB
+    note: Retain both GPU0 and GPU1 raw timelines; distinguish initialization, rollout, backward and weight sync.
+  - id: resources.host
+    unit: bytes_percent_and_count
+    grain: every_0point5_seconds
+    availability: required_capture
+    definition: CPU utilization, runnable tasks, load average, context switches, event-loop delay, host RAM, Ray/process memory, active/queued containers and service queue depth.
+    source: host_and_service_monitor
+  - id: resources.throughput
+    unit: per_second_and_seconds_per_successful_update
+    grain: rolling_window_and_run
+    availability: derived
+    definition: Attempted/completed trajectories per second, Planner output tokens per second, selected turn rows per second and total training wall-clock per successful update.
+    source: counters_tokens_and_monotonic_stage_timing
+
+  - id: cost.api
+    unit: USD
+    grain: request_stage_and_run
+    availability: required_capture
+    definition: Request/token usage by provider, retry billing, cache savings, frozen pricing snapshot, estimated spend and invoice reconciliation.
+    source: backend_usage_events_and_price_manifest
+    note: Distinguish zero marginal cache-hit cost from estimated cold-cache cost.
+  - id: cost.compute
+    unit: GPU_hours_and_node_hours
+    grain: stage_and_run
+    availability: derived
+    definition: Actual device-active GPU hours and reserved two-GPU node hours; identify the charging basis.
+    source: resource_timeline_and_run_timestamps
+  - id: cost.quality_efficiency
+    unit: tokens_seconds_USD_per_solved_task
+    grain: evaluation_by_task_and_condition
+    availability: derived
+    definition: Total attempted token/time/API cost divided by solved tasks; include failures and recovery cost. Also report quality versus cumulative training resources.
+    source: evaluation_attempts_plus_full_backend_usage
+    note: With zero solved tasks, return null and an explicit undefined-denominator reason.
+
+  - id: eval.sample_coverage
+    unit: counts_and_fraction
+    grain: run_and_seed_block
+    availability: derived
+    definition: Planned/observed/unique/model-valid/common-valid task-seed keys and attempt counts, with missing keys by task and condition.
+    source: frozen_evaluation_manifest_and_eval_samples.jsonl_and_attempt_ledger
+    gate: observed_unique_planned_key_coverage_equals_1
+  - id: eval.task_primary
+    unit: score_0_1
+    grain: task_id_decoding_seed_checkpoint
+    availability: native
+    definition: AIME accuracy; 2Wiki answer EM; TACO all-tests success; GPQA option accuracy; BigCodeBench all-tests success for single-sample pass@1.
+    source: EvaluationRecord.success_reward_task_metrics
+    note: Use success for TACO/BigCodeBench pass@1; keep TACO fractional reward in a separate column.
+  - id: eval.task_supporting
+    unit: task_specific
+    grain: task_id_decoding_seed_checkpoint
+    availability: native
+    definition: Fractional test reward, parse/error codes and benchmark-specific diagnostics; record exact native key names. 2Wiki emits answer EM only.
+    source: EvaluationRecord.task_metrics_and_failure_codes
+  - id: eval.task_cluster_summary
+    unit: score_0_1
+    grain: benchmark_condition_training_seed
+    availability: derived
+    definition: Score at fixed decoding seed 1 within each task, then equal-weight task mean; 95% task bootstrap interval with 2000 resamples.
+    source: eval.task_primary_on_common_valid_keys
+  - id: eval.macro_scores
+    unit: score_0_1
+    grain: condition_training_seed
+    availability: derived
+    definition: ID=(AIME accuracy+2Wiki answer EM+TACO all-pass)/3; OOD=(GPQA accuracy+BigCodeBench pass@1)/2.
+    source: eval.task_cluster_summary
+    note: Keep per-benchmark rows and fixed denominators; incomplete benchmarks make the macro unknown.
+  - id: eval.paired_effect
+    unit: percentage_points
+    grain: comparison_benchmark_training_seed
+    availability: derived
+    definition: Paired per-task difference at fixed decoding seed 1; task-level 95% bootstrap CI, failure-to-success and success-to-failure transitions.
+    source: paired_eval_sample_keys
+    note: CI of a difference uses paired differences, rather than independent endpoint interval subtraction.
+  - id: eval.training_seed_robustness
+    unit: score_and_percentage_points
+    grain: comparison_benchmark
+    availability: derived
+    definition: Individual training-seed estimates, mean, SD, range and optional preregistered paired seed/task hierarchical interval; retain baseline reuse covariance.
+    source: three_seed_block_paired_reports
+  - id: eval.operational_score
+    unit: score_0_1
+    grain: benchmark_condition
+    availability: derived
+    definition: Same task primary metric over every planned key with unrecovered infrastructure-invalid samples scored zero; report alongside common-valid quality.
+    source: full_planned_evaluation_and_attempt_ledger
+  - id: eval.failure_audit
+    unit: counts_and_fractions
+    grain: fixed_sample_by_task_and_condition
+    availability: required_capture
+    definition: Blinded classification of planning, tool choice, retrieval, code, Verifier, Generator, scorer, context/budget and infrastructure failures using a frozen sampling rule.
+    source: public_trajectories_and_separate_Evaluator_audit
+    note: Sample both regressions and improvements; terminal outcomes are observed outside online role/scorer inputs.

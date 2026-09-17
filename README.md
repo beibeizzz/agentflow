@@ -1,207 +1,189 @@
-# AgentFlow RL v3
+# AgentFlow Beta
 
-AgentFlow RL alpha is a veRL + vLLM implementation of four verifiable AgentFlow
-task environments:
+AgentFlow Beta 是统一、模块化的 reasoning agent 训练与评测实现。系统通过冻结角色和共享工具完成任务，只优化 Planner，并研究 Planner 强化学习对完整 Agentic System 的影响。
 
-- GSM8K calculator reasoning;
-- an isolated synthetic Ticket workflow;
-- DeepResearch over HotpotQA and 2Wiki with BM25 retrieval and citation checks;
-- TACO-Verified Easy/Medium coding with Docker-isolated execution.
+本分支包含可运行源码、正式配置、数据处理、PRM 训练、AgentFlow 强化学习、评测入口、服务脚本和容器定义。测试代码、实验记录、预测结果、模型权重、优化器检查点、数据集、索引和运行日志不进入仓库。
 
-GSM8K and Ticket retain the reviewed data, environments, terminal evaluators,
-and GSPO settings while adopting the complete shared role loop and Base
-Generator action. DeepResearch and Coding train separate `Qwen3-4B` Planner
-LoRA checkpoints while sharing frozen
-`Qwen3-8B` role modules. See [alpha_deployment.md](docs/alpha_deployment.md) for
-data preparation, exact training parameters, and the two-GPU runbook.
+## 系统流程
 
-The role and prompt changes define a new rollout distribution. Baseline,
-training, and evaluation results for this alpha must come from the same commit.
+一条轨迹依次经过 Query Analyzer、Planner、Executor、工具、Verifier 和 Generator。Planner 最多决策五轮；终局 Evaluator 使用私有答案或隐藏测试评分。Memory 是 append-only event log，各角色和 PRM 使用确定性的专属投影，隐藏评测信息只进入终局 Evaluator。
 
-The experimental order first measures the frozen AgentFlow baseline and then
-trains the Planner next-step LoRA with turn-level GSPO directly from the selected
-base or post-trained checkpoint.
+四个统一工具：
 
-## Preserved research semantics
+- `Base_Generator_Tool`：冻结 Qwen3-8B 通用推理。
+- `Python_Coder_Tool`：隔离 Python 沙箱。
+- `Google_Search_Tool`：Serper 搜索与安全网页读取。
+- `Wikipedia_Search_Tool`：Wikipedia-18 BM25 与 E5-HNSW64 混合检索。
 
-- Query Analyzer, Executor, Verifier, Generator, and Base Generator are frozen.
-- Deterministic tools and task environments expose typed observations through
-  the shared append-only Memory.
-- Only the Planner uses LoRA (`r=64`, `alpha=128`).
-- One rollout session is one complete multi-step trajectory.
-- A trajectory reward enters query-local mean/std exactly once.
-- Population standard deviation is used; zero-variance groups get zero
-  advantage.
-- The trajectory advantage is broadcast to its real Planner turns.
-- One veRL row is one Planner turn, so native `loss_mode=gspo` remains
-  turn-level rather than whole-trajectory GSPO.
-- GSM8K/Ticket use two PPO epochs; DeepResearch/Coding use one PPO epoch.
-- Ticket reward is binary and all formal splits are 50:50 direct:indirect.
-- Verifier controls role-loop termination; deterministic terminal evaluators
-  alone produce reward.
+训练使用 Qwen3-4B Planner LoRA（rank 64、alpha 128）、GSPO sequence-level loss、终局优势广播、PRM 过程优势和 DAPO 在线动态采样。冻结角色与 Base Generator 使用 Qwen3-8B，PRM 使用 Qwen3-0.6B。
 
-GSM8K/Ticket use temperature `1.2` and GSPO clips `0.001/0.003`.
-DeepResearch/Coding use temperature `1.0` and GSPO clips `0.0003/0.0004`.
-Every task uses top-p `1.0`, disabled top-k, and repetition penalty `1.0`.
-
-## Main structure
+## 目录
 
 ```text
-configs/                       veRL partial configs and AgentLoop registry
-data/                          source JSON/JSONL and provenance
-scripts/                       data, baseline, smoke, train, and eval entrypoints
-src/agentflow_rl/tasks/        prompts, tools, environments, deterministic checks
-src/agentflow_rl/synthesis/    isolated Ticket synthesis pipeline
-src/agentflow_rl/verl/         AgentLoops, token ports, advantage, Trainer, entrypoint
-tests/                         pure, parity, and fake-server integration tests
+configs/                  正式数据、训练、实验和 E0-E3 评测配置
+docker/                   Python 工具与 BigCodeBench 隔离执行镜像
+scripts/data/             数据准备
+scripts/prm/              PRM 标注与训练
+scripts/eval/             E0-E3 评测
+scripts/runtime/          服务、索引、preflight 和训练入口
+scripts/tools/            工具目录导出
+src/agentflow_rl/runtime  AgentLoop、Memory、投影、解析和隐私边界
+src/agentflow_rl/roles    角色 schema、prompt 和冻结模型网关
+src/agentflow_rl/tools    四个工具及注册表
+src/agentflow_rl/backends 模型、Serper、Wikipedia 和 Docker 后端
+src/agentflow_rl/tasks    五项任务适配器与 Evaluator
+src/agentflow_rl/rewards  奖励、rubric 和优势构造
+src/agentflow_rl/prm      PRM 数据、训练与推理
+src/agentflow_rl/sampling DAPO 动态采样
+src/agentflow_rl/data     切分、去重、泄漏检查与 veRL 数据
+src/agentflow_rl/integrations veRL/vLLM 和训练器
+src/agentflow_rl/evaluation   统一评测与指标
 ```
 
-See [architecture.md](docs/architecture.md) for the exact control/data flow and
-[migration.md](docs/migration.md) for the v2-to-v3 mapping.
-The cross-task invariant audit is recorded in
-[framework_consistency_review.md](docs/framework_consistency_review.md).
-Local and remote acceptance evidence is tracked in
-[alpha_verification.md](docs/alpha_verification.md).
-The Chinese project guide starts at
-[docs/project_guide/README.md](docs/project_guide/README.md) and covers the
-repository structure, architecture, four task flows, runtime stack, data and
-sandbox design, two-GPU execution, post-training theory, and Agentic RL trends.
+## 安装
 
-## Remote installation
-
-Linux, CUDA, Python 3.11, and Java 21 are recommended. Use a clean environment;
-the pinned veRL extra installs Ray, FSDP support, TransferQueue dependencies,
-and a compatible vLLM range.
-
-Place the repository itself on the expanded data volume. All model, corpus,
-index, rollout, and checkpoint paths are repository-relative, and the remote
-audit requires the project root and `DATA_ROOT` to share one filesystem.
+正式路径面向 Linux、CUDA、Docker 和可容纳 Qwen3-4B/Qwen3-8B 的多 GPU 环境。先安装匹配的 PyTorch、CUDA 和 FlashAttention 2：
 
 ```bash
-conda create -n agentflow-v3 python=3.11 -y
-conda activate agentflow-v3
-pip install -r requirements.txt
-pip install -e ".[test,data,research]"
-DATA_ROOT=/data bash scripts/remote/audit_environment.sh
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[data,retrieval,services,runtime]"
+export PYTHON="$(pwd)/.venv/bin/python"
+export PYTHONPATH="$(pwd)/src"
+bash scripts/runtime/check_environment.sh
 ```
 
-Prepare the external DeepResearch and Coding sources and indexes with
-[alpha_deployment.md](docs/alpha_deployment.md#data-preparation), then run
-`python scripts/prepare_verl_data.py --task all`.
+`runtime` extra 固定 veRL、vLLM 和 TransferQueue 版本。模型、数据、索引和镜像均使用不可变 revision。
 
-veRL is pinned to tag `v0.8.0`, commit
-`7aed6b230776f963fa09509c10d9c3a767d1102c`. Do not silently upgrade it: the
-custom Trainer relies on the synchronous PPO/TransferQueue/AgentLoop API at
-that commit.
-
-If the frozen server uses a separate environment, install
-`requirements-vllm.txt` there. `MODEL_PATH` defaults to
-`model/Qwen/Qwen3-8B` and serves the name `Qwen3-8B`. Legacy GSM8K/Ticket runs
-can set both `MODEL_PATH=model/Qwen/Qwen3-0.6B` and
-`SERVED_MODEL_NAME=Qwen3-0.6B`.
-
-## Two-GPU experiment workflow
-
-The alpha reference layout uses two A800 80 GB GPUs:
-
-- GPU0: external frozen OpenAI-compatible vLLM server;
-- GPU1: veRL FSDP LoRA actor and colocated Planner vLLM rollout.
-
-Use the 0.6B frozen-role service for GSM8K/Ticket and the 8B frozen-role service
-for DeepResearch/Coding. The exact two-phase command sequence and backend gates
-are documented in [alpha_deployment.md](docs/alpha_deployment.md#two-gpu-execution).
-
-Start the selected frozen model in terminal 1:
+## 数据
 
 ```bash
-bash scripts/serve_frozen_vllm.sh
+cp configs/data/formal_sources.example.yaml configs/data/formal_sources.yaml
+# 填写路径、revision、URI 和许可证
+$PYTHON scripts/data/prepare_formal_data.py \
+  --config configs/data/formal_sources.yaml --output data
 ```
 
-Prepare data once, then run the baseline before training:
+输出包括混合训练集、开发集、五项任务测试集、Evaluator 私有记录、数据 manifest 和泄漏报告。2Wiki 与 TACO 分别使用 800 条训练、80 条开发、80 条测试样本；GPQA Diamond 与 BigCodeBench-Hard 只用于评测。
+
+## 沙箱与工具服务
 
 ```bash
-python scripts/prepare_verl_data.py --task all
-bash scripts/run_ticket_baseline.sh
-bash scripts/run_gsm8k_baseline.sh
+export BIGCODEBENCH_COMMIT="<pinned-commit>"
+export SANDBOX_IMAGE="agentflow-python-sandbox:<revision>"
+export BIGCODEBENCH_IMAGE="agentflow-bigcodebench-evaluator:<revision>"
+bash scripts/runtime/build_sandbox_images.sh
+export SANDBOX_IMAGE_MANIFEST=outputs/environment/sandbox_images.json
+$PYTHON scripts/runtime/serve_python_sandbox.py
 ```
 
-Run a two-step smoke before the formal job:
+Python 工具使用六个预热 worker，每个 1 CPU 和 1 GiB 内存，最多接受 34 个排队请求。容器内网络关闭，CPU、内存、时间、进程和输出均受限。
+
+Google Search 从 `SERPER_API_KEY` 读取凭据，允许 40 个搜索并发和 12 个网页读取并发。
+
+## Wikipedia
+
+规范语料为固定 revision 的 `wiki-18.jsonl`。Arrow、BM25 和 FAISS 通过同一 corpus row 对齐：
 
 ```bash
-bash scripts/run_ticket_smoke.sh
-bash scripts/run_gsm8k_smoke.sh
+$PYTHON scripts/runtime/build_wikipedia_hnsw.py \
+  --corpus /data/wikipedia/wiki-18.jsonl \
+  --arrow-cache-dir /data/wikipedia/arrow-cache \
+  --model /data/models/intfloat-e5-base-v2 \
+  --model-revision "<e5-revision>" \
+  --index-revision "<index-revision>" \
+  --index-output /data/wikipedia/wiki18-hnsw64.faiss \
+  --flat-reference-output /data/wikipedia/wiki18-flat.faiss \
+  --manifest-output /data/wikipedia/wiki18-hnsw64.manifest.json \
+  --device cpu --threads 20 --m 64 --ef-construction 256
 ```
 
-Run Planner-only LoRA GSPO:
+为同一语料建立 Pyserini BM25 索引，设置 `WIKIPEDIA_CORPUS_PATH`、`WIKIPEDIA_ARROW_CACHE_DIR`、`WIKIPEDIA_ARROW_FINGERPRINT`、`WIKIPEDIA_BM25_INDEX`、`WIKIPEDIA_FAISS_INDEX`、`WIKIPEDIA_E5_MODEL`、`WIKIPEDIA_E5_REVISION` 和 `WIKIPEDIA_INDEX_REVISION`，再运行：
 
 ```bash
-bash scripts/run_ticket_train.sh
-bash scripts/run_gsm8k_train.sh
+$PYTHON scripts/runtime/serve_wikipedia.py
 ```
 
-Training configs use veRL `resume_mode=auto`. Baseline, smoke, and default eval
-disable resume to prevent stale checkpoints from changing the measured policy.
-To evaluate a specific veRL checkpoint, point eval at its `global_step_*`
-directory:
+服务默认监听 8002，同时处理四个检索批次，在 5 ms 内合并最多 16 个查询。
+
+## 模型服务
 
 ```bash
-bash scripts/run_ticket_eval.sh \
-  --override trainer.resume_mode=resume_path \
-  --override trainer.resume_from_path=outputs/ticket/train/global_step_20
+export FROZEN_MODEL_PATH=/data/models/Qwen3-8B
+export FROZEN_MODEL_REVISION="<frozen-revision>"
+export FROZEN_CUDA_VISIBLE_DEVICES=1
+bash scripts/runtime/serve_frozen_qwen3_8b.sh
+
+export PRM_MODEL_PATH=/data/models/agentflow-prm
+export PRM_REVISION="<prm-revision>"
+export PRM_CUDA_VISIBLE_DEVICES=1
+bash scripts/runtime/serve_prm_vllm.sh
+
+export PRM_BACKEND=vllm
+export PRM_VLLM_ENDPOINT=http://127.0.0.1:8004
+$PYTHON scripts/runtime/serve_prm.py
 ```
 
-The same form applies to GSM8K. An external PEFT adapter can instead be passed
-with `--adapter-path`, which sets the Planner LoRA rank/alpha automatically.
+冻结 8B、PRM wrapper 和 PRM vLLM 默认监听 8001、8003 和 8004。
 
-## Metrics and outputs
-
-Each shell entrypoint enables veRL's native `console` and `file` loggers. The
-JSONL file is written to:
-
-```text
-outputs/<task>/<mode>/metrics.jsonl
-```
-
-It contains veRL-native loss, learning-rate, grad-norm, throughput, timing,
-response-length, validation, and checkpoint-step fields plus:
-
-- reward/advantage mean and population std;
-- query-group, trajectory, valid/invalid trajectory, and real-turn counts;
-- zero-variance/skipped-group counts and fractions;
-- task success, step count, validity, Ticket direct/indirect, and GSM8K
-  verifier-stop metrics.
-
-Formal training and smoke configs also write turn-level rollout generation
-dumps under `outputs/<task>/<mode>/rollouts/`. Baseline/eval and periodic train
-validation write all Planner-turn prompts/responses under the corresponding
-`validation/` directory. Because each later Planner prompt contains prior tool
-observations or GSM8K judge memory, these dumps retain the trajectory evidence
-needed for error analysis without a separate runtime logger.
-
-## Local verification
-
-CPU tests use fake Planner and frozen-model servers while preserving exact
-token IDs and log-probabilities.
+## PRM 标注与训练
 
 ```bash
-python -m pytest -q
-python -m compileall -q src scripts
+export DEEPSEEK_API_KEY="<api-key>"
+$PYTHON scripts/prm/label_transitions.py \
+  --input outputs/prm/transitions.jsonl \
+  --output outputs/prm/formal/labels.jsonl \
+  --cache outputs/prm/formal/judge-cache.jsonl \
+  --metrics outputs/prm/formal/label-metrics.json \
+  --base-url "<judge-api-url>" --revision "<judge-revision>" \
+  --tokenizer /data/models/Qwen3-0.6B
+
+export PRM_BASE_MODEL=/data/models/Qwen3-0.6B
+export PRM_LABELS=outputs/prm/formal/labels.jsonl
+export PRM_OUTPUT=outputs/prm/formal/training-ddp
+bash scripts/runtime/train_prm_ddp.sh
 ```
 
-WSL2 single-GPU validation runs real Qwen3-0.6B inference, vLLM rollout, veRL
-AgentLoop training, weight synchronization, and checkpoint persistence:
+PRM 输入包括任务 query、统一评分指令、当前决策前的有效 Memory、Planner action、Executor 核心请求和工具核心结果。训练与在线打分使用同一个序列化协议。
+
+## Preflight 与 Planner 训练
+
+设置 `PLANNER_MODEL_PATH`、`PLANNER_REVISION`、`FROZEN_MODEL_PATH`、`FROZEN_MODEL_REVISION`、`PRM_REVISION`、`WIKIPEDIA_INDEX_REVISION`、`WIKIPEDIA_BENCHMARK_REPORT`、`SANDBOX_IMAGE`、`BIGCODEBENCH_IMAGE`、`BIGCODEBENCH_REVISION` 和 `SANDBOX_IMAGE_MANIFEST`，启动服务后执行：
 
 ```bash
-bash scripts/local/setup_wsl_env.sh
-bash scripts/local/serve_gsm8k_frozen_single_gpu.sh  # terminal 1
-bash scripts/local/run_gsm8k_single_gpu_smoke.sh     # terminal 2
+export TRAIN_CUDA_VISIBLE_DEVICES=0
+export REWARD_MODE=prm
+bash scripts/runtime/run_real_preflight.sh
+bash scripts/runtime/run_unified_train.sh
 ```
 
-See [alpha_deployment.md](docs/alpha_deployment.md#wsl2-single-gpu-smoke) for
-the tested environment and output contract. Formal 4B/8B preflight uses the
-remote Linux CUDA host. Locally generated `data/verl/` files are deterministic
-build artifacts and can be regenerated from the tracked sources.
+正式配置采集 8 个候选 prompt group，每组 5 条轨迹；DAPO 过滤终局奖励无方差 group，并补采样到 4 个合格 group 或达到生成上限。Actor 使用动态 token batch、`ppo_mini_batch_size=32`、`ppo_max_token_len_per_gpu=40960`、学习率 `1e-6`、一个数据 epoch 和零 KL。
 
-Data sources and hashes are recorded in [data/README.md](data/README.md).
-Licensing and reviewed-source provenance are recorded in `NOTICE`,
-`THIRD_PARTY_NOTICES.md`, and `LICENSES/`.
+## E0-E3 评测
+
+四个条件为 Qwen3-4B 直接生成、初始 Planner AgentFlow、终局奖励 RL、终局奖励加 PRM RL：
+
+```bash
+cp configs/eval/shared_manifest.example.yaml configs/eval/shared_manifest.yaml
+$PYTHON scripts/eval/prepare_evaluation_manifest.py \
+  --config configs/eval/shared_manifest.yaml \
+  --output outputs/evaluation/shared_manifest.json
+
+export EVAL_PLANNER_MODEL_PATH=/data/models/or/checkpoints/planner
+export EVAL_PLANNER_CUDA_VISIBLE_DEVICES=0
+bash scripts/runtime/serve_planner_eval.sh
+```
+
+使用 `scripts/eval/run_evaluation.py` 运行 `E0_direct`、`E1_initial_agentflow`、`E2_terminal_rl` 和 `E3_terminal_prm_rl`。五个 `data/verl/test_*.parquet` 逐项追加 `--input`；各条件共享测试数据、私有记录、工具预算、解码参数和冻结 revision，默认单种子、并发 8。使用 `scripts/eval/compare_evaluations.py` 汇总结果。
+
+AIME、2Wiki 和 GPQA 使用任务对应的规范化答案评测；TACO 与 BigCodeBench 使用隔离测试执行器。隐藏答案和隐藏测试只存在于 Evaluator 边界。
+
+## 复现与安全
+
+- manifest 保存模型、数据、语料、索引、prompt、Evaluator、镜像和环境哈希。
+- Serper 与 Judge 凭据只从环境变量读取。
+- 网页读取拒绝私有、回环、链路本地和重定向后的受限地址。
+- 模型、语料、轨迹、缓存、索引、checkpoint 和日志位于 Git 忽略路径。
+
+项目使用 Apache-2.0。第三方声明见 `LICENSES/`、`NOTICE` 和 `THIRD_PARTY_NOTICES.md`。

@@ -1,0 +1,207 @@
+schema_version: 1
+protocol_id: agentflow-controlled-v1
+status: active
+purpose: experiment_orchestration_and_recording
+assumption: runtime_environment_ready
+
+fixed:
+  planner: Qwen3-4B-post-trained
+  planner_training: lora
+  planner_lora_rank: 64
+  planner_lora_alpha: 128
+  planner_lora_targets: all-linear
+  frozen_roles: Qwen3-8B
+  prm: Qwen3-0.6B
+  candidate_groups: 8
+  trajectories_per_group: 5
+  retained_groups: 4
+  max_planner_turns: 5
+  turn_mini_batch_max: 32
+  dynamic_token_budget_per_gpu: 40960
+  rollout_gpu_memory_utilization: 0.50
+  lr: 0.000001
+  gspo_clip_low: 0.0003
+  gspo_clip_high: 0.0004
+  kl_coefficient: 0.0
+  ppo_epochs: 1
+  lambda_process: 0.30
+  max_prompt_tokens: 4096
+  max_output_tokens: 1024
+  direct_enable_thinking: true
+  direct_max_output_tokens: 12288
+  evaluation_max_concurrency: 8
+  evaluation_temperature: 0.6
+  evaluation_top_p: 0.95
+  evaluation_top_k: 20
+  frozen_max_prompt_tokens: 4096
+  frozen_generator_max_prompt_tokens: 8192
+  frozen_max_output_tokens:
+    query_analyzer: 1024
+    executor: 1024
+    verifier: 512
+    generator: 2048
+    base_generator: 768
+  dynamic_sampling_metric: terminal_reward
+  dynamic_sampling_target: data_train_batch_size
+  max_num_gen_batches: 10
+  prm_max_input_tokens: 8192
+  prm_backend: vllm_pooling_classification
+  prm_vllm_gpu_memory_utilization: 0.10
+  prm_vllm_max_num_seqs: 32
+  prm_vllm_max_batched_tokens: 65536
+  prm_request_batch_max_size: 32
+  prm_request_batch_wait_ms: 10.0
+  prm_request_batch_max_queue: 256
+  twowiki_split_sizes: {train: 800, development: 80, test: 80}
+  taco_split_sizes: {train: 800, development: 80, test: 80}
+  mixed_train_rows: 2400
+  temperature: 1.0
+  top_p: 1.0
+  trajectory_timeout_s: 600
+  http_timeout_s: 120
+  wikipedia_index_type: hnsw64
+  wikipedia_hnsw_m: 64
+  wikipedia_hnsw_ef_search: 256
+  wikipedia_max_concurrency: 4
+  wikipedia_max_queue: 40
+  wikipedia_batch_max_size: 16
+  wikipedia_batch_wait_ms: 5.0
+  python_sandbox_max_concurrency: 6
+  python_sandbox_max_queue: 34
+  python_sandbox_max_reuses: 64
+  python_sandbox_service_revision: python-sandbox-service-v1
+  python_sandbox_memory_gib: 1
+  python_sandbox_cpus_per_container: 1
+  serper_max_concurrency: 40
+  web_reader_max_concurrency: 12
+
+conditions:
+  E0_direct: {training: none, process_training: none, inference: direct, process_evaluation: none}
+  E1_initial_agentflow: {training: none, process_training: none, inference: agentflow, process_evaluation: none}
+  E2_terminal_rl: {training: terminal_gspo, process_training: none, inference: agentflow, process_evaluation: none}
+  E3_terminal_prm_rl: {training: terminal_process_gspo, process_training: learned_prm, inference: agentflow, process_evaluation: none}
+inactive_conditions:
+  E4_terminal_judge_rl:
+    status: paused
+    reason: excluded_from_current_pilot_formal_training_and_final_evaluation
+
+seeds:
+  data_split: inherited_from_frozen_data_manifest
+  pilot_training: [7]
+  formal_training: [11]
+  decoding: [1]
+  prm_training: 42
+  bootstrap: 42
+  require_effective_seed_mapping: true
+
+stages:
+  S0: {exit_gate: G0, activity: freeze_identities_and_data}
+  S1:
+    exit_gate: G1
+    data: rl_train_only
+    unique_prompt_groups_per_task: 32
+    minimum_candidate_collections_per_mode: 12
+    candidate_trajectories_at_minimum: 480
+    minimum_successful_updates_per_mode: 3
+    checkpoint_reload_required: true
+    learned_prm_mode_after_G2: true
+  S2:
+    exit_gate: G2
+    baseline_conditions: [E0_direct, E1_initial_agentflow]
+    baseline_data: development
+    E2_warmup_data_epochs: 1
+    E2_warmup_reusable_as_pilot: true
+    prm_label_probe_prompts_per_task: 50
+    prm_label_target_prompts_per_task: 300
+    prm_policy_sources: [initial_planner, E2_pilot_checkpoints]
+    E2_source_checkpoints: [early, middle, final]
+    trajectories_per_prompt_per_policy: 6
+    prm_split_unit: original_prompt
+    prm_dev_fraction: 0.10
+    human_audit_transitions_per_task: 50
+  S3:
+    exit_gate: G3
+    conditions: [E2_terminal_rl, E3_terminal_prm_rl]
+    data_epochs: 1
+    dev_eval_and_save_every_successful_updates: 20
+    expected_candidate_prompt_batches: 300
+    expected_successful_update_range: [122, 241]
+    central_successful_update_range: [179, 209]
+    improvement_over_control_required_to_proceed: false
+  S4:
+    exit_gate: G4
+    formal_run_count: 2
+    selected_data_epochs: 1
+    expected_candidate_prompt_batches_per_run: 300
+    collection_safety_cap: 1000
+    selected_save_and_dev_eval_interval: null
+    initial_checkpoint_for_every_run: same_frozen_initial_planner
+    primary_checkpoint_rule: final_completed_data_epoch
+    run_order:
+      - {training_seed: 11, conditions: [E2_terminal_rl, E3_terminal_prm_rl]}
+  S5:
+    exit_gate: G5
+    datasets: [aime_2023_2024, twowiki_heldout, taco_heldout, gpqa_diamond, bigcodebench_hard]
+    task_primary_metrics:
+      aime: exact_accuracy
+      twowiki: answer_em
+      taco: all_tests_pass_rate
+      gpqa: exact_option_accuracy
+      bigcodebench: pass_at_1
+    baseline_reuse: explicit_provenance_same_observations
+    unique_checkpoint_count: 4
+    planned_samples_formula: 4_times_total_test_tasks
+    infrastructure_recovery_retries: 2
+    accepted_attempt_rule: first_infrastructure_valid_attempt
+    model_error_retries: 0
+
+gate_thresholds:
+  identity_privacy_key_context_violation_max: 0
+  nan_inf_oom_allocator_retry_max: 0
+  natural_infrastructure_failure_rate_max: 0.01
+  process_missing_rate_max: 0.05
+  process_support_for_every_present_task: true
+  gpu_peak_used_gib_exclusive_max: 75
+  gpu_min_free_gib: 5
+  prm_label_schema_valid_rate_min: 0.99
+  prm_human_audit_severe_error_rate_max: 0.10
+  prm_macro_mae_ratio_to_constant_baseline_max: 0.90
+  prm_per_task_mae_excess_over_baseline_max: 0.02
+  prm_macro_spearman_exclusive_min: 0.0
+  prm_per_task_spearman_min: 0.0
+  prm_same_prompt_turn_comparable_pairs_per_task_min: 100
+  prm_same_prompt_turn_pairwise_accuracy_min: 0.60
+  evaluation_planned_key_coverage: 1.0
+  wikipedia_hnsw_recall_at_10_min: 0.97
+  wikipedia_search_p95_s_max: 1.0
+
+monitoring:
+  resource_sample_interval_s: 0.5
+  rolling_collection_window: 20
+  consecutive_process_gate_failures_pause: 3
+  consecutive_skipped_collections_pause: 20
+  clip_fraction_alert: {above: 0.80, consecutive_successful_updates: 10}
+  entropy_alert: {fraction_of_initial_below: 0.50}
+  dev_regression_alert: {absolute_drop: 0.05, consecutive_evaluations: 2}
+  trend_alert_action: log_research_diagnosis_and_follow_frozen_protocol
+
+analysis:
+  primary_comparisons: [E2_minus_E1, E3_minus_E2]
+  secondary_comparisons: [E1_minus_E0]
+  within_seed_cluster: task_id
+  paired_key: [task_name, task_id, decoding_seed]
+  confidence: 0.95
+  bootstrap_samples: 2000
+  cross_training_seed_summary: unavailable_with_one_training_seed
+  report_each_training_seed: false
+  quality_population: four_condition_common_valid_keys
+  operational_population: full_planned_keys_final_invalid_as_zero
+  significance_testing: optional_preregister_before_G3
+
+budget:
+  status: populate_from_pilot_before_G3
+  total_gpu_hours: null
+  total_api_usd: null
+  contingency_fraction: 0.25
+  collection_cap_formula: at_least_one_epoch_candidate_batches
+  separate_costs: [environment_tests, baseline_dev, E2_warmup, prm_collection, prm_labels, prm_training, controlled_pilot, formal_training, development_eval, final_eval, recovery]

@@ -1,1 +1,3 @@
-"""veRL AgentLoop runtime for language-only AgentFlow experiments."""
+"""AgentFlow Beta runtime and training interfaces."""
+
+__version__ = "0.1.0"
