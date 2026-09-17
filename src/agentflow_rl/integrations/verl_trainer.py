@@ -21,15 +21,30 @@ from agentflow_rl.runtime.contracts import TaskName
 from agentflow_rl.sampling import select_dapo_groups
 
 from .policy_identity import write_policy_update_id
+from .batch_lifecycle import (
+    PaddingLifecycle,
+    close_padding_lifecycle,
+    is_padding_tag,
+    real_batch_view,
+)
 
 
 def build_turn_rewards_from_metadata(
-    *, keys: Sequence[str], extra_fields: Sequence[dict[str, Any] | None]
+    *,
+    keys: Sequence[str],
+    extra_fields: Sequence[dict[str, Any] | None],
+    padding_tags: Sequence[dict[str, Any] | None] | None = None,
 ) -> list[TurnReward]:
     if len(keys) != len(extra_fields):
         raise ValueError("veRL keys and extra fields must align")
     rows = []
-    for key, metadata in zip(keys, extra_fields, strict=True):
+    if padding_tags is None:
+        padding_tags = [None] * len(keys)
+    if len(keys) != len(padding_tags):
+        raise ValueError("veRL keys and padding tags must align")
+    for key, metadata, tag in zip(keys, extra_fields, padding_tags, strict=True):
+        if is_padding_tag(tag):
+            continue
         item = metadata or {}
         rows.append(
             TurnReward(
@@ -299,16 +314,28 @@ def zero_response_aligned_training_fields(
 
 
 def policy_freshness_metrics(
-    metadata: Sequence[dict[str, Any] | None], *, expected_update_id: str
+    metadata: Sequence[dict[str, Any] | None],
+    *,
+    expected_update_id: str,
+    padding_tags: Sequence[dict[str, Any] | None] | None = None,
 ) -> dict[str, float]:
+    if padding_tags is None:
+        padding_tags = [None] * len(metadata)
+    if len(metadata) != len(padding_tags):
+        raise ValueError("metadata and padding tags must align")
+    real_metadata = [
+        item
+        for item, tag in zip(metadata, padding_tags, strict=True)
+        if not is_padding_tag(tag)
+    ]
     revisions = {
         str(item["rollout_policy_revision"])
-        for item in metadata
+        for item in real_metadata
         if item and item.get("rollout_policy_revision")
     }
     update_ids = {
         str(item["rollout_policy_update_id"])
-        for item in metadata
+        for item in real_metadata
         if item and item.get("rollout_policy_update_id") is not None
     }
     return {
@@ -710,6 +737,19 @@ except ModuleNotFoundError:
 if _VERL_AVAILABLE:
 
     class AgentFlowPPOTrainer(_AgentFlowTrainerMixin, PPOTrainer):
+        def _actor_data_parallel_size(self) -> int:
+            role = "actor"
+            worker_group = self.actor_rollout_wg
+            if role not in worker_group._dispatch_info:
+                worker_group._dispatch_info[role] = worker_group._query_dispatch_info(
+                    role
+                )
+            mapping = worker_group._dispatch_info[role]
+            dp_size = max(mapping) + 1
+            if dp_size <= 0:
+                raise RuntimeError("actor data-parallel size must be positive")
+            return dp_size
+
         def init_workers(self):
             result = super().init_workers()
             bind_policy_update_identity(
@@ -896,6 +936,7 @@ if _VERL_AVAILABLE:
                     batch = self.replay_buffer.sample(
                         partition_id="train", global_steps=self.global_steps
                     )
+                    batch = real_batch_view(batch)
                     metadata_data = tq.kv_batch_get(
                         keys=batch.keys,
                         partition_id=batch.partition_id,
@@ -939,7 +980,7 @@ if _VERL_AVAILABLE:
             if self.reward_loop_manager.reward_loop_worker_handles is None:
                 with marked_timer("reward", timing_raw, color="yellow"):
                     batch = self._compute_reward_colocate(batch)
-            batch = self._balance_batch(batch, metrics=metrics)
+            # Each worker call constructs its own short-lived execution view.
             with marked_timer("old_log_prob", timing_raw, color="blue"):
                 batch = self._compute_old_log_prob(batch, metrics=metrics)
             if self.use_reference_policy:
@@ -959,6 +1000,7 @@ if _VERL_AVAILABLE:
             return batch
 
         def _compute_advantage(self, batch: KVBatchMeta, metrics: dict) -> KVBatchMeta:
+            batch = real_batch_view(batch)
             data = tq.kv_batch_get(
                 keys=batch.keys,
                 partition_id=batch.partition_id,
@@ -1029,6 +1071,7 @@ if _VERL_AVAILABLE:
         def _compute_old_log_prob(
             self, batch: KVBatchMeta, metrics: dict
         ) -> KVBatchMeta:
+            batch = real_batch_view(batch)
             data = tq.kv_batch_get(
                 keys=batch.keys,
                 partition_id=batch.partition_id,
@@ -1038,49 +1081,57 @@ if _VERL_AVAILABLE:
             plan = self._prepare_training_selection(keys=batch.keys, metadata=metadata)
             metrics.update(plan.metrics)
             if plan.trainable_keys:
-                super()._compute_old_log_prob(
-                    batch.select_keys(list(plan.trainable_keys)), metrics
+                selected = batch.select_keys(list(plan.trainable_keys))
+                dp_size = self._actor_data_parallel_size()
+                if len(selected) < dp_size:
+                    raise RuntimeError(
+                        "old-log-prob real row count must cover every actor DP rank"
+                    )
+                execution = super()._balance_batch(
+                    selected,
+                    metrics,
+                    logging_prefix="old_log_prob_seqlen",
                 )
+                if len(execution) % dp_size:
+                    raise RuntimeError(
+                        "old-log-prob execution batch is not divisible by actor DP size"
+                    )
+                lifecycle = PaddingLifecycle.register(
+                    stage="old_log_prob",
+                    before=selected,
+                    execution=execution,
+                    transfer_queue=tq,
+                    replay_buffer=self.replay_buffer,
+                )
+                active_error = None
+                try:
+                    super()._compute_old_log_prob(execution, metrics)
+                except BaseException as error:
+                    active_error = error
+                    raise
+                finally:
+                    close_padding_lifecycle(
+                        lifecycle, metrics, active_error=active_error
+                    )
             metrics["agentflow/old_log_prob_row_count"] = float(
                 len(plan.trainable_keys)
             )
             metrics["agentflow/candidate_turn_row_count"] = float(len(batch.keys))
             return batch
 
-        def _update_actor(self, batch: KVBatchMeta, metrics: dict) -> KVBatchMeta:
-            keys = tuple(getattr(self, "_agentflow_trainable_keys", tuple(batch.keys)))
-            if not keys:
-                metrics["agentflow/actor_update_skipped"] = 1.0
-                write_step_metrics(
-                    self.config.trainer.default_local_dir,
-                    int(self.global_steps),
-                    metrics,
-                )
-                return batch
-            train_batch = batch.select_keys(list(keys))
-            actor = self.config.actor_rollout_ref.actor
-            agentflow = self.config.get("agentflow", {})
-            mini_batch_size = int(
-                agentflow.get("turn_mini_batch_size", actor.ppo_mini_batch_size)
-            )
-            layout = fixed_turn_mini_batch_layout(
-                turn_count=len(train_batch), mini_batch_size=mini_batch_size
-            )
-            train_batch = upsample_batch_to_divisible_size(
-                train_batch,
-                batch_multiple=layout.mini_batch_size,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
+        def _run_actor_execution(
+            self,
+            train_batch: KVBatchMeta,
+            *,
+            layout: TurnMiniBatchLayout,
+            actor: Any,
+        ) -> Any:
             if len(train_batch) != layout.padded_turn_count:
                 raise RuntimeError(
                     "veRL padding produced an unexpected actor batch size: "
                     f"expected {layout.padded_turn_count}, got {len(train_batch)}"
                 )
             if layout.padding_turn_count:
-                # AgentFlow pads after old-log-prob and advantage construction.
-                # veRL's helper copies the source row before replacing its
-                # response mask, so rebuild every response-aligned training
-                # field to match the synthetic one-token, fully masked row.
                 padding_keys = train_batch.keys[layout.real_turn_count :]
                 padding_data = tq.kv_batch_get(
                     keys=padding_keys,
@@ -1138,7 +1189,60 @@ if _VERL_AVAILABLE:
                     distillation_use_topk=distillation_topk,
                 )
             )
-            output = self.actor_rollout_wg.update_actor(train_batch)
+            return self.actor_rollout_wg.update_actor(train_batch)
+
+        def _update_actor(self, batch: KVBatchMeta, metrics: dict) -> KVBatchMeta:
+            keys = tuple(getattr(self, "_agentflow_trainable_keys", tuple(batch.keys)))
+            if not keys:
+                metrics["agentflow/actor_update_skipped"] = 1.0
+                write_step_metrics(
+                    self.config.trainer.default_local_dir,
+                    int(self.global_steps),
+                    metrics,
+                )
+                return batch
+            train_batch = batch.select_keys(list(keys))
+            actor = self.config.actor_rollout_ref.actor
+            agentflow = self.config.get("agentflow", {})
+            mini_batch_size = int(
+                agentflow.get("turn_mini_batch_size", actor.ppo_mini_batch_size)
+            )
+            layout = fixed_turn_mini_batch_layout(
+                turn_count=len(train_batch), mini_batch_size=mini_batch_size
+            )
+            dp_size = self._actor_data_parallel_size()
+            if layout.mini_batch_size % dp_size:
+                raise RuntimeError(
+                    "actor turn mini-batch size must be divisible by actor DP size"
+                )
+            if layout.real_turn_count < dp_size:
+                raise RuntimeError(
+                    "actor real row count must cover every actor DP rank"
+                )
+            execution_batch = upsample_batch_to_divisible_size(
+                train_batch,
+                batch_multiple=layout.mini_batch_size,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
+            lifecycle = PaddingLifecycle.register(
+                stage="actor",
+                before=train_batch,
+                execution=execution_batch,
+                transfer_queue=tq,
+                replay_buffer=self.replay_buffer,
+            )
+            active_error = None
+            try:
+                output = self._run_actor_execution(
+                    execution_batch, layout=layout, actor=actor
+                )
+            except BaseException as error:
+                active_error = error
+                raise
+            finally:
+                close_padding_lifecycle(
+                    lifecycle, metrics, active_error=active_error
+                )
             self._agentflow_successful_update_count = self._successful_updates() + 1
             output = rename_dict(output["metrics"], "actor/")
             if "actor/mfu" in output:

@@ -103,6 +103,14 @@ metrics:
     definition: Candidate rows, selected old-log-prob rows, real actor rows, padding rows, padded total, fixed mini-batch size and minimum/maximum real rows per optimizer step; separately capture zero-advantage retained rows.
     native_mapping: {candidate: agentflow/candidate_turn_row_count, old_log_prob: agentflow/old_log_prob_row_count, real_actor: agentflow/actor_real_turn_count, padded_actor: agentflow/actor_padded_turn_count, padding: agentflow/actor_padding_turn_count, padding_fraction: agentflow/actor_padding_fraction, mini_batch: agentflow/actor_turn_mini_batch_size, min_real_per_step: agentflow/actor_min_real_turns_per_step, max_real_per_step: agentflow/actor_max_real_turns_per_step}
     source: agentflow_metrics_and_selected_batch
+  - id: train.padding_lifecycle
+    unit: synthetic_rows
+    grain: worker_execution_stage_and_collection
+    availability: native
+    definition: Synthetic execution rows created, reclaimed, still live, and failed during cleanup for old-log-prob and actor worker calls.
+    native_mapping: {old_created: agentflow/old_log_prob_padding_created, old_cleaned: agentflow/old_log_prob_padding_cleaned, old_live: agentflow/old_log_prob_padding_live, old_cleanup_failed: agentflow/old_log_prob_padding_cleanup_failed, actor_created: agentflow/actor_padding_created, actor_cleaned: agentflow/actor_padding_cleaned, actor_live: agentflow/actor_padding_live, actor_cleanup_failed: agentflow/actor_padding_cleanup_failed}
+    source: scoped_padding_key_registry
+    gate: live_and_cleanup_failed_equal_zero_after_each_worker_call
   - id: train.key_consistency
     unit: violations
     grain: every_actor_update

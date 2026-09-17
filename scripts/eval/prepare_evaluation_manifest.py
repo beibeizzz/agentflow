@@ -7,7 +7,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import yaml
 
-from agentflow_rl.data.fingerprint import sha256_json
+from agentflow_rl.utils.fingerprint import sha256_json
 from agentflow_rl.evaluation import (
     ArtifactDigest,
     SharedEvaluationManifest,

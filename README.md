@@ -24,7 +24,6 @@ AgentFlow Beta 是统一、模块化的 reasoning agent 训练与评测实现。
 ```text
 configs/                  正式数据、训练、实验和 E0-E3 评测配置
 docker/                   Python 工具与 BigCodeBench 隔离执行镜像
-scripts/data/             数据准备
 scripts/prm/              PRM 标注与训练
 scripts/eval/             E0-E3 评测
 scripts/runtime/          服务、索引、preflight 和训练入口
@@ -37,7 +36,7 @@ src/agentflow_rl/tasks    五项任务适配器与 Evaluator
 src/agentflow_rl/rewards  奖励、rubric 和优势构造
 src/agentflow_rl/prm      PRM 数据、训练与推理
 src/agentflow_rl/sampling DAPO 动态采样
-src/agentflow_rl/data     切分、去重、泄漏检查与 veRL 数据
+src/agentflow_rl/utils    canonical JSON 与公共哈希协议
 src/agentflow_rl/integrations veRL/vLLM 和训练器
 src/agentflow_rl/evaluation   统一评测与指标
 ```
@@ -60,14 +59,7 @@ bash scripts/runtime/check_environment.sh
 
 ## 数据
 
-```bash
-cp configs/data/formal_sources.example.yaml configs/data/formal_sources.yaml
-# 填写路径、revision、URI 和许可证
-$PYTHON scripts/data/prepare_formal_data.py \
-  --config configs/data/formal_sources.yaml --output data
-```
-
-输出包括混合训练集、开发集、五项任务测试集、Evaluator 私有记录、数据 manifest 和泄漏报告。2Wiki 与 TACO 分别使用 800 条训练、80 条开发、80 条测试样本；GPQA Diamond 与 BigCodeBench-Hard 只用于评测。
+这个可复用副本接收已经完成治理的 veRL Parquet 和 Evaluator 私有 JSONL。训练配置默认读取 AIME、2Wiki、TACO 混合训练数据；E0-E3 评测读取五项任务的 `test_*.parquet`。数据文件、模型、索引、轨迹和 checkpoint 保持为实例侧工件。
 
 ## 沙箱与工具服务
 
@@ -160,7 +152,7 @@ bash scripts/runtime/run_real_preflight.sh
 bash scripts/runtime/run_unified_train.sh
 ```
 
-正式配置采集 8 个候选 prompt group，每组 5 条轨迹；DAPO 只按终局奖励方差过滤，并补采样到 4 个合格 group 或达到生成上限。Actor 使用动态 token batch、`ppo_mini_batch_size=32`、`ppo_max_token_len_per_gpu=40960`、学习率 `1e-6`、一个数据 epoch 和零 KL。默认训练目录分别为 `outputs/train/rtg_loo_terminal` 与 `outputs/train/rtg_loo_prm`。
+正式配置采集 8 个候选 prompt group，每组 5 条轨迹；DAPO 只按终局奖励方差过滤，并补采样到 4 个合格 group 或达到生成上限。筛选、RTG+LOO、PRM 可用性和策略新鲜度只读取真实轨迹视图。Old-log-prob 按实际 DP 大小建立临时执行视图，Actor 按 32 行建立临时执行视图；两处 synthetic padding 均带 `is_padding=True`，完成 worker 调用后从 TQ 与 ReplayBuffer 回收。Actor 使用动态 token batch、`ppo_mini_batch_size=32`、`ppo_max_token_len_per_gpu=40960`、学习率 `1e-6`、一个数据 epoch 和零 KL。默认训练目录分别为 `outputs/train/rtg_loo_terminal` 与 `outputs/train/rtg_loo_prm`。
 
 ## E0-E3 评测
 
@@ -168,6 +160,7 @@ bash scripts/runtime/run_unified_train.sh
 
 ```bash
 cp configs/eval/shared_manifest.example.yaml configs/eval/shared_manifest.yaml
+# 填写所有 revision、SHA-256、镜像 digest 和服务身份
 $PYTHON scripts/eval/prepare_evaluation_manifest.py \
   --config configs/eval/shared_manifest.yaml \
   --output outputs/evaluation/shared_manifest.json
@@ -177,7 +170,7 @@ export EVAL_PLANNER_CUDA_VISIBLE_DEVICES=0
 bash scripts/runtime/serve_planner_eval.sh
 ```
 
-使用 `scripts/eval/run_evaluation.py` 运行 `E0_direct`、`E1_initial_agentflow`、`E2_terminal_rl` 和 `E3_terminal_prm_rl`。五个 `data/verl/test_*.parquet` 逐项追加 `--input`；各条件共享测试数据、私有记录、工具预算、解码参数和冻结 revision，默认单种子、并发 8。使用 `scripts/eval/compare_evaluations.py` 汇总结果。
+共享 manifest 使用 schema v2，并严格校验嵌套的角色 token 预算、执行预算和 Python sandbox 服务 revision/timeout。使用 `scripts/eval/run_evaluation.py` 运行 `E0_direct`、`E1_initial_agentflow`、`E2_terminal_rl` 和 `E3_terminal_prm_rl`。五个 `data/verl/test_*.parquet` 逐项追加 `--input`；每次运行显式传入 `--sandbox-service-url`、`--sandbox-service-revision` 和 `--sandbox-service-timeout-s`。各条件共享测试数据、私有记录、工具预算、解码参数和冻结 revision，默认单种子、并发 8。使用 `scripts/eval/compare_evaluations.py` 汇总结果。
 
 AIME、2Wiki 和 GPQA 使用任务对应的规范化答案评测；TACO 与 BigCodeBench 使用隔离测试执行器。隐藏答案和隐藏测试只存在于 Evaluator 边界。
 

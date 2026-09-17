@@ -7,7 +7,11 @@ from .metrics import (
 )
 from .manifests import (
     ArtifactDigest,
+    EvaluationBudgets,
+    EvaluationExecution,
     EvaluationRunManifest,
+    FrozenRoleOutputBudgets,
+    SandboxServiceIdentity,
     SharedEvaluationManifest,
     assert_run_matches_shared_manifest,
     build_run_manifest,
@@ -33,6 +37,10 @@ __all__ = [
     "EvaluationRunManifest",
     "SharedEvaluationManifest",
     "ArtifactDigest",
+    "EvaluationBudgets",
+    "EvaluationExecution",
+    "FrozenRoleOutputBudgets",
+    "SandboxServiceIdentity",
     "aggregate_records",
     "assert_run_matches_shared_manifest",
     "bootstrap_mean_interval",

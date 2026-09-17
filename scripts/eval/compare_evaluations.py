@@ -39,6 +39,7 @@ def main() -> int:
             shared,
             condition=run.condition,
             planner_revision=run.planner_revision,
+            sandbox_service_url=str(run.sandbox_service_url),
             records=records,
         )
         if run != expected:

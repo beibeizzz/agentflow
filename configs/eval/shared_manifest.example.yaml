@@ -1,4 +1,4 @@
-schema_version: "1"
+schema_version: "2"
 evaluation_id: formal-eval-v1
 input_paths:
   - ../../data/verl/test_aime.parquet
@@ -24,12 +24,15 @@ wikipedia_revision: wikipedia-18-index-revision
 wikipedia_index_type: hnsw64
 wikipedia_hnsw_m: 64
 wikipedia_hnsw_ef_search: 256
-wikipedia_index_sha256: replace-with-64-character-sha256
-wikipedia_corpus_sha256: replace-with-64-character-sha256
+wikipedia_index_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+wikipedia_corpus_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
 wikipedia_arrow_fingerprint: replace-with-datasets-arrow-fingerprint
 wikipedia_encoder_revision: intfloat-e5-base-v2-revision
-wikipedia_benchmark_sha256: replace-with-64-character-sha256
+wikipedia_benchmark_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
 sandbox_image: agentflow-python-sandbox@sha256:replace
+sandbox_service:
+  revision: python-sandbox-service-v1
+  timeout_s: 30.0
 bigcodebench_image: agentflow-bigcodebench-evaluator@sha256:replace
 bigcodebench_revision: bigcodebench-hard-revision
 decoding:

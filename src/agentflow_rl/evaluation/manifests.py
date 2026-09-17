@@ -5,15 +5,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
-from agentflow_rl.data.fingerprint import sha256_json
+from agentflow_rl.utils.fingerprint import sha256_json
 
 from .runner import ACTIVE_EVALUATION_CONDITIONS, EvaluationCondition, EvaluationRecord
 
 
 class StrictFrozenModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
 class ArtifactDigest(StrictFrozenModel):
@@ -21,8 +21,41 @@ class ArtifactDigest(StrictFrozenModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class FrozenRoleOutputBudgets(StrictFrozenModel):
+    query_analyzer: int = Field(gt=0)
+    executor: int = Field(gt=0)
+    verifier: int = Field(gt=0)
+    generator: int = Field(gt=0)
+    base_generator: int = Field(gt=0)
+
+
+class EvaluationBudgets(StrictFrozenModel):
+    retrieval_read_top_k: int = Field(gt=0)
+    retrieval_max_passages: int = Field(gt=0)
+    retrieval_max_source_chars: int = Field(gt=0)
+    retrieval_read_timeout_s: float = Field(gt=0)
+    max_turns: int = Field(gt=0)
+    max_prompt_tokens: int = Field(gt=0)
+    max_output_tokens: int = Field(gt=0)
+    direct_max_output_tokens: int = Field(gt=0)
+    frozen_max_prompt_tokens: int = Field(gt=0)
+    frozen_generator_max_prompt_tokens: int = Field(gt=0)
+    frozen_max_output_tokens: FrozenRoleOutputBudgets
+
+
+class EvaluationExecution(StrictFrozenModel):
+    max_concurrency: int = Field(gt=0)
+    trajectory_timeout_s: float = Field(gt=0)
+    http_timeout_s: float = Field(gt=0)
+
+
+class SandboxServiceIdentity(StrictFrozenModel):
+    revision: str = Field(min_length=1)
+    timeout_s: float = Field(gt=0)
+
+
 class SharedEvaluationManifest(StrictFrozenModel):
-    schema_version: str = "1"
+    schema_version: str = Field(default="2", pattern=r"^2$")
     evaluation_id: str = Field(min_length=1)
     inputs: tuple[ArtifactDigest, ...]
     private_records: ArtifactDigest
@@ -46,11 +79,12 @@ class SharedEvaluationManifest(StrictFrozenModel):
     wikipedia_encoder_revision: str = Field(min_length=1)
     wikipedia_benchmark_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     sandbox_image: str = Field(min_length=1)
+    sandbox_service: SandboxServiceIdentity
     bigcodebench_image: str = Field(min_length=1)
     bigcodebench_revision: str = Field(min_length=1)
     decoding: dict[str, float | int | bool]
-    budgets: dict[str, float | int]
-    execution: dict[str, float | int]
+    budgets: EvaluationBudgets
+    execution: EvaluationExecution
     manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -65,10 +99,11 @@ class SharedEvaluationManifest(StrictFrozenModel):
 
 
 class EvaluationRunManifest(StrictFrozenModel):
-    schema_version: str = "1"
+    schema_version: str = Field(default="2", pattern=r"^2$")
     shared_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     condition: EvaluationCondition
     planner_revision: str = Field(min_length=1)
+    sandbox_service_url: AnyHttpUrl
     record_count: int = Field(ge=0)
     sample_keys_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     valid_sample_keys_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -132,7 +167,11 @@ def assert_run_matches_shared_manifest(
         ),
     }
     for key, expected in settings.items():
-        checks[key] = (expected, getattr(manifest, key))
+        frozen_value = getattr(manifest, key)
+        if isinstance(frozen_value, BaseModel):
+            expected = type(frozen_value).model_validate(expected).model_dump(mode="json")
+            frozen_value = frozen_value.model_dump(mode="json")
+        checks[key] = (expected, frozen_value)
     mismatches = [name for name, (actual, expected) in checks.items() if actual != expected]
     if mismatches:
         raise ValueError(
@@ -146,6 +185,7 @@ def build_run_manifest(
     *,
     condition: EvaluationCondition,
     planner_revision: str,
+    sandbox_service_url: str,
     records: list[EvaluationRecord],
 ) -> EvaluationRunManifest:
     if manifest.manifest_sha256 is None:
@@ -160,6 +200,7 @@ def build_run_manifest(
         shared_manifest_sha256=manifest.manifest_sha256,
         condition=condition,
         planner_revision=planner_revision,
+        sandbox_service_url=sandbox_service_url,
         record_count=len(records),
         sample_keys_sha256=sha256_json(keys),
         valid_sample_keys_sha256=sha256_json(valid_keys),
@@ -184,7 +225,11 @@ def _write_json(path: Path, value: Any) -> None:
 
 __all__ = [
     "ArtifactDigest",
+    "EvaluationBudgets",
+    "EvaluationExecution",
     "EvaluationRunManifest",
+    "FrozenRoleOutputBudgets",
+    "SandboxServiceIdentity",
     "SharedEvaluationManifest",
     "assert_run_matches_shared_manifest",
     "build_run_manifest",

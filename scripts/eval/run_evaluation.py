@@ -6,8 +6,6 @@ import os
 from pathlib import Path
 
 import pyarrow.parquet as pq
-from openai import AsyncOpenAI
-from transformers import AutoTokenizer
 
 from agentflow_rl.backends.frozen_llm import OpenAICompatibleDirectGateway
 from agentflow_rl.evaluation import (
@@ -77,6 +75,9 @@ def runtime_config(args: argparse.Namespace) -> dict:
                 "retrieval_max_source_chars": args.retrieval_max_source_chars,
                 "retrieval_read_timeout_s": args.retrieval_read_timeout_s,
                 "sandbox_image": args.sandbox_image,
+                "sandbox_service_url": args.sandbox_service_url,
+                "sandbox_service_revision": args.sandbox_service_revision,
+                "sandbox_service_timeout_s": args.sandbox_service_timeout_s,
                 "bigcodebench_image": args.bigcodebench_image,
                 "bigcodebench_revision": args.bigcodebench_revision,
                 "serper_key_env": "SERPER_API_KEY",
@@ -90,6 +91,9 @@ def runtime_config(args: argparse.Namespace) -> dict:
 
 
 async def run(args: argparse.Namespace) -> None:
+    from openai import AsyncOpenAI
+    from transformers import AutoTokenizer
+
     envelopes = load_envelopes(args.input)
     condition = EvaluationCondition(args.condition)
     shared_manifest = read_shared_manifest(args.shared_manifest)
@@ -122,6 +126,10 @@ async def run(args: argparse.Namespace) -> None:
             "wikipedia_encoder_revision": args.wikipedia_encoder_revision,
             "wikipedia_benchmark_sha256": args.wikipedia_benchmark_sha256,
             "sandbox_image": args.sandbox_image,
+            "sandbox_service": {
+                "revision": args.sandbox_service_revision,
+                "timeout_s": args.sandbox_service_timeout_s,
+            },
             "bigcodebench_image": args.bigcodebench_image,
             "bigcodebench_revision": args.bigcodebench_revision,
             "decoding": {
@@ -232,13 +240,14 @@ async def run(args: argparse.Namespace) -> None:
             shared_manifest,
             condition=condition,
             planner_revision=args.planner_revision,
+            sandbox_service_url=args.sandbox_service_url,
             records=records,
         ),
         args.output / "evaluation_run_manifest.json",
     )
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one active AgentFlow E0-E3 condition")
     parser.add_argument(
         "--condition",
@@ -287,6 +296,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--serper-cache", type=Path, required=True)
     parser.add_argument("--sandbox-image", required=True)
+    parser.add_argument(
+        "--sandbox-service-url", default="http://127.0.0.1:8005"
+    )
+    parser.add_argument(
+        "--sandbox-service-revision", default="python-sandbox-service-v1"
+    )
+    parser.add_argument("--sandbox-service-timeout-s", type=float, default=30.0)
     parser.add_argument("--bigcodebench-image", required=True)
     parser.add_argument("--bigcodebench-revision", required=True)
     parser.add_argument("--seed", type=int, action="append", default=[])
@@ -316,7 +332,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retrieval-max-passages", type=int, default=3)
     parser.add_argument("--retrieval-max-source-chars", type=int, default=4000)
     parser.add_argument("--retrieval-read-timeout-s", type=float, default=8.0)
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    args = build_parser().parse_args(argv)
     if not args.seed:
         args.seed = [1]
     return args
