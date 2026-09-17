@@ -172,7 +172,9 @@ async def evaluate_direct(
             adapter = tasks.adapter(envelope.public.task_name)
             evaluator = tasks.evaluator(envelope.public.task_name)
             prompt = (
-                f"{adapter.render_task(envelope.public)}\n\n"
+                f"Task instructions: {adapter.task_instructions}\n\n"
+                f"Question:\n{adapter.render_task(envelope.public)}\n\n"
+                "Return exactly one JSON object matching this schema:\n"
                 f"{adapter.final_answer_instructions}"
             )
             started = monotonic()

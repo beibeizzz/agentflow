@@ -1,8 +1,6 @@
-# AgentFlow Beta
+# AgentFlow RL
 
-AgentFlow Beta 是统一、模块化的 reasoning agent 训练与评测实现。系统通过冻结角色和共享工具完成任务，只优化 Planner，并研究 Planner 强化学习对完整 Agentic System 的影响。
-
-本分支包含可运行源码、正式配置、数据处理、PRM 训练、AgentFlow 强化学习、评测入口、服务脚本和容器定义。测试代码、实验记录、预测结果、模型权重、优化器检查点、数据集、索引和运行日志不进入仓库。
+AgentFlow RL 是统一、模块化的 reasoning agent 训练与评测实现。系统通过冻结角色和共享工具完成任务，只优化 Planner，并研究 Planner 强化学习对完整 Agentic System 的影响。
 
 ## 系统流程
 

@@ -10,8 +10,9 @@ from agentflow_rl.runtime.parsing import strict_json_object, strip_optional_thin
 class TACOAdapter:
     task_name = TaskName.TACO
     task_instructions = (
-        "Produce a Python solution for the programming problem. Use public tests for "
-        "diagnosis and preserve the accepted code revision in the final response."
+        "Produce a complete Python solution for the programming problem. Use public "
+        "tests for diagnosis and return the latest complete code revision supported "
+        "by visible evidence."
     )
     final_answer_instructions = '{"answer":"complete Python code","public_artifacts":{}}'
 

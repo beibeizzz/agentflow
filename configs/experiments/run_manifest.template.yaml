@@ -26,7 +26,7 @@ identity:
   prm_weights_sha256: null
   prm_tokenizer_sha256: null
   prm_encoding_revision: null
-  process_rubric_revision: planner-progress-rubric-v1
+  process_rubric_revision: planner-progress-rubric-v2
   prm_input_limit: null
   judge_requested_model: null
   judge_observed_revision: null

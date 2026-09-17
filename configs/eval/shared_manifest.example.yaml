@@ -16,7 +16,7 @@ condition_planner_revisions:
 planner_model: Qwen3-4B-Planner
 frozen_model: Qwen3-8B
 frozen_revision: qwen3-8b-revision
-prompt_revision: unified-role-prompts-v5
+prompt_revision: unified-role-prompts-v6
 evaluator_revision: terminal-evaluators-v3-taco-spj-safe
 tool_contract_revision: shared-tools-v3
 serper_revision: serper-search-v1

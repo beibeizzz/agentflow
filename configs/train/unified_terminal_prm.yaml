@@ -127,7 +127,7 @@ agentflow:
     max_num_gen_batches: 10
     balance_window_steps: 3
   process_reward:
-    rubric_revision: planner-progress-rubric-v1
+    rubric_revision: planner-progress-rubric-v2
     mode: prm
     backend: vllm
     endpoint: http://127.0.0.1:8003/score
