@@ -57,6 +57,13 @@ bash scripts/runtime/check_environment.sh
 
 `runtime` extra 固定 veRL、vLLM 和 TransferQueue 版本。模型、数据、索引和镜像均使用不可变 revision。
 
+本次评测入口、RTG+LOO 和 padding 生命周期的聚焦 CPU 回归可在无模型权重、无外部服务的环境运行：
+
+```bash
+python -m pip install -e ".[test,data]"
+python -m pytest -q
+```
+
 ## 数据
 
 这个可复用副本接收已经完成治理的 veRL Parquet 和 Evaluator 私有 JSONL。训练配置默认读取 AIME、2Wiki、TACO 混合训练数据；E0-E3 评测读取五项任务的 `test_*.parquet`。数据文件、模型、索引、轨迹和 checkpoint 保持为实例侧工件。

@@ -12,6 +12,7 @@ license = "Apache-2.0"
 dependencies = ["pydantic>=2.0,<3", "PyYAML>=6.0"]
 
 [project.optional-dependencies]
+test = ["pytest>=8,<9", "pytest-asyncio>=0.24"]
 data = ["datasets>=3.0", "pyarrow>=19.0", "pandas>=2.0"]
 retrieval = ["pyserini>=0.44,<1", "faiss-cpu>=1.9", "sentence-transformers>=3.0"]
 services = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.34,<1", "transformers>=4.51,<6"]
@@ -26,3 +27,8 @@ runtime = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--strict-markers"
