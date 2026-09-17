@@ -15,7 +15,9 @@ AgentFlow Beta 是统一、模块化的 reasoning agent 训练与评测实现。
 - `Google_Search_Tool`：Serper 搜索与安全网页读取。
 - `Wikipedia_Search_Tool`：Wikipedia-18 BM25 与 E5-HNSW64 混合检索。
 
-训练使用 Qwen3-4B Planner LoRA（rank 64、alpha 128）、GSPO sequence-level loss、终局优势广播、PRM 过程优势和 DAPO 在线动态采样。冻结角色与 Base Generator 使用 Qwen3-8B，PRM 使用 Qwen3-0.6B。
+训练使用 Qwen3-4B Planner LoRA（rank 64、alpha 128）、GSPO sequence-level loss、RTG+LOO 优势和 DAPO 在线动态采样。冻结角色与 Base Generator 使用 Qwen3-8B，PRM 使用 Qwen3-0.6B。
+
+优势算法 revision 为 `terminal_prm_rtg_loo_v1`。每条有效轨迹的原始 PRM 分数按逆序累加，并除以固定的五轮上限，得到各轮过程 reward-to-go。终局奖励和过程 RTG 分别减去同一 prompt group 中其他有效完整轨迹的 leave-one-out 均值；较短轨迹结束后的过程回报按零参与后续轮次的基线。`lambda_process=0.30` 加权过程优势。组内任一有效 turn 缺少 PRM 分数时，整个 group 使用 terminal-only LOO。checkpoint 恢复要求算法 revision、最大轮数和过程权重完全一致。
 
 ## 目录
 
@@ -158,7 +160,7 @@ bash scripts/runtime/run_real_preflight.sh
 bash scripts/runtime/run_unified_train.sh
 ```
 
-正式配置采集 8 个候选 prompt group，每组 5 条轨迹；DAPO 过滤终局奖励无方差 group，并补采样到 4 个合格 group 或达到生成上限。Actor 使用动态 token batch、`ppo_mini_batch_size=32`、`ppo_max_token_len_per_gpu=40960`、学习率 `1e-6`、一个数据 epoch 和零 KL。
+正式配置采集 8 个候选 prompt group，每组 5 条轨迹；DAPO 只按终局奖励方差过滤，并补采样到 4 个合格 group 或达到生成上限。Actor 使用动态 token batch、`ppo_mini_batch_size=32`、`ppo_max_token_len_per_gpu=40960`、学习率 `1e-6`、一个数据 epoch 和零 KL。默认训练目录分别为 `outputs/train/rtg_loo_terminal` 与 `outputs/train/rtg_loo_prm`。
 
 ## E0-E3 评测
 

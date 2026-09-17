@@ -82,6 +82,8 @@ transfer_queue:
     storage_backend: SimpleStorage
     SimpleStorage: {num_data_storage_units: 1, total_storage_size: 100000}
 agentflow:
+  # RTG over raw per-turn PRM scores plus prompt-group leave-one-out baselines.
+  advantage_revision: terminal_prm_rtg_loo_v1
   # Collection safety cap, including skipped updates; exhaustion fails the run.
   max_collection_steps: 1000
   environment_mode: formal
@@ -112,6 +114,8 @@ agentflow:
   trajectory_timeout_s: 600
   trajectory_artifact_dir: outputs/trajectories
   http_timeout_s: 120
+  # Weights raw process RTG advantage after fixed-horizon 1/max_turns scaling.
+  # This differs from the historical coefficient on a z-scored same-turn value.
   lambda_process: 0.30
   max_advantage: 5.0
   turn_mini_batch_size: 32

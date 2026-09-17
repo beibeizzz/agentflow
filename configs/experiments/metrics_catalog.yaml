@@ -124,21 +124,27 @@ metrics:
     availability: native
     definition: One terminal reward per completed trajectory; report candidate and retained distributions independently.
     source: trajectory_verification_and_selection_membership
-  - id: train.zero_variance
-    unit: prompt_groups_or_prompt_turn_cells
+  - id: train.rtg_loo_support
+    unit: prompt_groups_turns_and_configuration
     grain: every_collection
     availability: native
-    definition: Terminal zero-variance groups and supported/unsupported process normalization cells.
+    definition: RTG+LOO algorithm identity, fixed horizon, process weight, singleton groups, complete-score RTG groups, terminal-only fallback groups, RTG turns, missing-score turns and clipped turns; report candidate and retained populations separately.
     native_mapping:
-      terminal: agentflow/terminal_zero_variance_group_count
-      process_supported: agentflow/process_supported_cell_count
-      process_unsupported: agentflow/process_unsupported_cell_count
+      revision: agentflow/advantage_revision
+      horizon: agentflow/advantage_horizon
+      process_weight: agentflow/advantage_process_weight
+      singleton_groups: agentflow/singleton_group_count
+      complete_groups: agentflow/process_complete_group_count
+      fallback_groups: agentflow/process_fallback_group_count
+      rtg_turns: agentflow/process_rtg_turn_count
+      missing_turns: agentflow/process_missing_turn_count
+      clipped_turns: agentflow/clipped_turn_count
     source: advantage_metrics
   - id: train.advantage_components
     unit: advantage
     grain: planner_turn_by_task_and_turn_index
     availability: required_capture
-    definition: Terminal, unweighted process, lambda-weighted process, pre-clip combined and final combined advantages; retain normalization group/cell identity.
+    definition: Raw PRM score, fixed-horizon process RTG, total return, terminal/process LOO baselines, terminal advantage, unweighted process advantage, lambda-weighted process advantage, pre-clip combined advantage and final combined advantage; retain prompt-group and trajectory identity.
     source: AdvantageResult_and_reward_rows_before_actor_update
     note: Capture component values before temporary batch data is cleared.
   - id: train.credit_diagnostics
@@ -184,12 +190,17 @@ metrics:
     source: rollout_extra_fields_and_scorer_events
     gate: global_missing_rate_le_0point05_and_each_present_task_supported
     note: Recompute task counts from actual task-name values; retain successful score zero as available.
-  - id: process.normalization_support
-    unit: fractions
-    grain: prompt_turn_cell_by_task
-    availability: derived
-    definition: Cells with at least two valid scores and supported variance; separate singleton, all-missing and zero-variance causes.
-    source: raw_process_scores_and_turn_indices
+  - id: process.rtg_availability
+    unit: counts_and_fractions
+    grain: prompt_group_and_task_by_candidate_or_retained_population
+    availability: native
+    definition: Raw-score availability and valid RTG availability use separate counts. A single missing valid-turn score marks the whole prompt group as terminal-only fallback while preserving acquired raw scores.
+    native_mapping:
+      candidate_raw_available: agentflow/candidate_prm_score_available_turn_count
+      candidate_rtg_available: agentflow/candidate_process_rtg_available_turn_count
+      retained_raw_available: agentflow/retained_prm_score_available_turn_count
+      retained_rtg_available: agentflow/retained_process_rtg_available_turn_count
+    source: AdvantageResult_and_reward_rows_before_actor_update
   - id: process.label_quality
     unit: fractions
     grain: label_batch_by_task

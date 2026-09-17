@@ -56,7 +56,7 @@ case "${REWARD_MODE:-prm}" in
     ;;
 esac
 
-run_name="${RUN_NAME:-unified_${REWARD_MODE:-prm}}"
+run_name="${RUN_NAME:-rtg_loo_${REWARD_MODE:-prm}}"
 overrides+=(--override trainer.experiment_name="${run_name}")
 overrides+=(--override trainer.rollout_data_dir="outputs/train/${run_name}/rollouts")
 overrides+=(--override trainer.default_local_dir="outputs/train/${run_name}")

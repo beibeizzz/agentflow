@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 import inspect
 import json
+import math
 from pathlib import Path
 from typing import Any, Sequence
 import uuid
@@ -10,6 +11,7 @@ import uuid
 import numpy as np
 
 from agentflow_rl.rewards import (
+    ADVANTAGE_REVISION,
     AdvantageResult,
     TurnAdvantageMetrics,
     TurnReward,
@@ -33,12 +35,14 @@ def build_turn_rewards_from_metadata(
             TurnReward(
                 key=str(key),
                 task_id=str(item["task_id"]),
-                task_name=item["task_name"],
+                task_name=TaskName(item["task_name"]),
                 trajectory_id=str(item["trajectory_id"]),
                 turn_index=int(item["turn_index"]),
                 terminal_reward=float(item["terminal_reward"]),
                 process_score=(
-                    None if item.get("process_score") is None else float(item["process_score"])
+                    None
+                    if item.get("process_score") is None
+                    else float(item["process_score"])
                 ),
                 valid_for_training=bool(item.get("valid_for_training", True)),
                 prompt_group_id=str(item.get("uid") or item["task_id"]),
@@ -52,6 +56,157 @@ def advantage_metrics_dict(metrics: TurnAdvantageMetrics) -> dict[str, float]:
         f"agentflow/{field.name}": float(getattr(metrics, field.name))
         for field in fields(metrics)
     }
+
+
+def advantage_diagnostic_metrics(
+    result: AdvantageResult,
+    rows: Sequence[TurnReward],
+    *,
+    keys: Sequence[str],
+    scope: str,
+) -> dict[str, float]:
+    selected = set(keys)
+    valid_rows = [row for row in rows if row.valid_for_training and row.key in selected]
+
+    def mean(values: list[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
+
+    metrics = {
+        f"agentflow/{scope}_turn_count": float(len(valid_rows)),
+        f"agentflow/{scope}_prm_score_available_turn_count": float(
+            sum(row.process_score is not None for row in valid_rows)
+        ),
+        f"agentflow/{scope}_process_rtg_available_turn_count": float(
+            sum(result.process_return[row.key] is not None for row in valid_rows)
+        ),
+        f"agentflow/{scope}_raw_prm_score_mean": mean(
+            [
+                float(row.process_score)
+                for row in valid_rows
+                if row.process_score is not None
+            ]
+        ),
+        f"agentflow/{scope}_process_rtg_mean": mean(
+            [
+                float(result.process_return[row.key])
+                for row in valid_rows
+                if result.process_return[row.key] is not None
+            ]
+        ),
+        f"agentflow/{scope}_terminal_advantage_mean": mean(
+            [result.terminal[row.key] for row in valid_rows]
+        ),
+        f"agentflow/{scope}_process_advantage_mean": mean(
+            [result.process[row.key] for row in valid_rows]
+        ),
+        f"agentflow/{scope}_weighted_process_advantage_mean": mean(
+            [result.weighted_process[row.key] for row in valid_rows]
+        ),
+        f"agentflow/{scope}_raw_combined_advantage_mean": mean(
+            [result.raw_combined[row.key] for row in valid_rows]
+        ),
+        f"agentflow/{scope}_final_advantage_mean": mean(
+            [result.combined[row.key] for row in valid_rows]
+        ),
+        f"agentflow/{scope}_process_rtg_complete_group_count": float(
+            len(
+                {
+                    row.group_id
+                    for row in valid_rows
+                    if result.process_group_status.get(row.group_id) == "complete"
+                }
+            )
+        ),
+        f"agentflow/{scope}_process_rtg_fallback_group_count": float(
+            len(
+                {
+                    row.group_id
+                    for row in valid_rows
+                    if result.process_group_status.get(row.group_id)
+                    == "terminal_only_missing_process_score"
+                }
+            )
+        ),
+    }
+    for task in (TaskName.AIME, TaskName.TWOWIKI, TaskName.TACO):
+        task_rows = [row for row in valid_rows if row.task_name == task]
+        metrics[f"agentflow/{scope}_prm_score_available_{task.value}"] = float(
+            sum(row.process_score is not None for row in task_rows)
+        )
+        metrics[f"agentflow/{scope}_process_rtg_available_{task.value}"] = float(
+            sum(result.process_return[row.key] is not None for row in task_rows)
+        )
+        metrics[f"agentflow/{scope}_process_rtg_complete_groups_{task.value}"] = float(
+            len(
+                {
+                    row.group_id
+                    for row in task_rows
+                    if result.process_group_status.get(row.group_id) == "complete"
+                }
+            )
+        )
+    return metrics
+
+
+def advantage_audit_records(
+    result: AdvantageResult,
+    rows: Sequence[TurnReward],
+    *,
+    retained_keys: Sequence[str],
+    advantage_revision: str,
+    max_turns: int,
+    lambda_process: float,
+) -> list[dict[str, Any]]:
+    retained = set(retained_keys)
+    invalid = set(result.invalid_keys)
+    return [
+        {
+            "key": row.key,
+            "task_id": row.task_id,
+            "task_name": row.task_name.value,
+            "prompt_group_id": row.group_id,
+            "trajectory_id": row.trajectory_id,
+            "turn_index": row.turn_index,
+            "valid_for_training": row.valid_for_training,
+            "retained_for_actor": row.key in retained,
+            "invalid": row.key in invalid,
+            "advantage_revision": advantage_revision,
+            "max_turns": max_turns,
+            "lambda_process": lambda_process,
+            "terminal_reward": row.terminal_reward,
+            "raw_process_score": result.raw_process_score[row.key],
+            "process_return": result.process_return[row.key],
+            "total_return": result.total_return[row.key],
+            "trajectory_utility": result.trajectory_utility.get(
+                (row.group_id, row.trajectory_id)
+            ),
+            "terminal_baseline": result.terminal_baseline[row.key],
+            "process_baseline": result.process_baseline[row.key],
+            "terminal_advantage": result.terminal[row.key],
+            "process_advantage": result.process[row.key],
+            "weighted_process_advantage": result.weighted_process[row.key],
+            "raw_combined_advantage": result.raw_combined[row.key],
+            "final_advantage": result.combined[row.key],
+            "process_group_status": result.process_group_status[row.group_id],
+        }
+        for row in rows
+    ]
+
+
+def write_advantage_audit(
+    root: str | Path,
+    global_step: int,
+    records: Sequence[dict[str, Any]],
+) -> Path:
+    target = Path(root) / "agentflow_metrics" / f"step_{global_step}_advantages.jsonl"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+    return target
 
 
 def as_metadata_list(value: Any) -> list[Any]:
@@ -92,9 +247,7 @@ def fixed_turn_mini_batch_layout(
         mini_batch_size=mini_batch_size,
         optimizer_step_count=optimizer_step_count,
         minimum_real_turns_per_step=turn_count // optimizer_step_count,
-        maximum_real_turns_per_step=(
-            turn_count + optimizer_step_count - 1
-        )
+        maximum_real_turns_per_step=(turn_count + optimizer_step_count - 1)
         // optimizer_step_count,
     )
 
@@ -120,9 +273,7 @@ def balanced_padded_key_order(
         real_count = base + int(step_index < extra)
         padding_count = mini_batch_size - real_count
         ordered.extend(real_keys[real_offset : real_offset + real_count])
-        ordered.extend(
-            padding_keys[padding_offset : padding_offset + padding_count]
-        )
+        ordered.extend(padding_keys[padding_offset : padding_offset + padding_count])
         real_offset += real_count
         padding_offset += padding_count
     if real_offset != len(real_keys) or padding_offset != len(padding_keys):
@@ -164,8 +315,7 @@ def policy_freshness_metrics(
         "agentflow/rollout_policy_revision_count": float(len(revisions)),
         "agentflow/rollout_policy_update_id_count": float(len(update_ids)),
         "agentflow/rollout_policy_fresh": float(
-            len(revisions) == 1
-            and update_ids == {str(expected_update_id)}
+            len(revisions) == 1 and update_ids == {str(expected_update_id)}
         ),
     }
 
@@ -183,6 +333,7 @@ def bind_policy_update_identity(
             raise RuntimeError("veRL requested a conflicting policy update ID")
         result = original(global_steps=update_id)
         if inspect.isawaitable(result):
+
             async def wait_and_record():
                 value = await result
                 if identity_path is not None:
@@ -204,13 +355,21 @@ def build_unpadded_attention_mask(input_ids: Any) -> Any:
     if not getattr(input_ids, "is_nested", False):
         return torch.ones_like(input_ids, dtype=torch.int64)
     lengths = input_ids.offsets().diff()
-    positions = torch.arange(int(lengths.max().item()), device=lengths.device).unsqueeze(0)
+    positions = torch.arange(
+        int(lengths.max().item()), device=lengths.device
+    ).unsqueeze(0)
     return (positions < lengths.unsqueeze(1)).to(torch.int64)
 
 
 def actor_update_metadata(
-    *, turn_count: int, mini_batch_size: int, ppo_epochs: int, seed: int,
-    shuffle: bool, temperature: float, calculate_entropy: bool,
+    *,
+    turn_count: int,
+    mini_batch_size: int,
+    ppo_epochs: int,
+    seed: int,
+    shuffle: bool,
+    temperature: float,
+    calculate_entropy: bool,
     distillation_use_topk: bool,
 ) -> dict[str, Any]:
     if min(turn_count, mini_batch_size, ppo_epochs) <= 0:
@@ -249,7 +408,8 @@ class ProcessAvailability:
 class TrainingSelectionPlan:
     advantages: AdvantageResult
     trainable_keys: tuple[str, ...]
-    metrics: dict[str, float]
+    metrics: dict[str, Any]
+    algorithm_identity: tuple[str, int, float, float]
 
 
 def process_availability_gate(
@@ -264,11 +424,11 @@ def process_availability_gate(
     available = [row for row in valid if row.process_score is not None]
     missing = len(valid) - len(available)
     per_task_total = {
-        task: sum(row.task_name is task for row in valid)
+        task: sum(row.task_name == task for row in valid)
         for task in (TaskName.AIME, TaskName.TWOWIKI, TaskName.TACO)
     }
     per_task_available = {
-        task: sum(row.task_name is task for row in available)
+        task: sum(row.task_name == task for row in available)
         for task in (TaskName.AIME, TaskName.TWOWIKI, TaskName.TACO)
     }
     missing_rate = missing / len(valid) if valid else 1.0
@@ -294,6 +454,8 @@ def build_training_selection(
     expected_update_id: str,
     lambda_process: float,
     max_advantage: float,
+    max_turns: int,
+    advantage_revision: str,
     process_required: bool,
     max_missing_rate: float,
     require_each_task: bool,
@@ -306,8 +468,18 @@ def build_training_selection(
         rows,
         lambda_process=lambda_process,
         max_advantage=max_advantage,
+        max_turns=max_turns,
+        advantage_revision=advantage_revision,
     )
     metrics = advantage_metrics_dict(result.metrics)
+    metrics.update(
+        advantage_diagnostic_metrics(
+            result,
+            rows,
+            keys=[row.key for row in rows],
+            scope="candidate",
+        )
+    )
     freshness = policy_freshness_metrics(
         metadata, expected_update_id=expected_update_id
     )
@@ -316,7 +488,22 @@ def build_training_selection(
     if freshness["agentflow/rollout_policy_fresh"] != 1.0:
         trainable_keys = ()
 
-    if process_required:
+    metrics.update(
+        {
+            "agentflow/advantage_revision": advantage_revision,
+            "agentflow/advantage_horizon": float(max_turns),
+            "agentflow/advantage_process_weight": float(lambda_process),
+        }
+    )
+    for task in (TaskName.AIME, TaskName.TWOWIKI, TaskName.TACO):
+        metrics[f"agentflow/process_rtg_complete_groups_{task.value}"] = float(
+            result.process_complete_groups_by_task[task]
+        )
+        metrics[f"agentflow/process_rtg_fallback_groups_{task.value}"] = float(
+            result.process_fallback_groups_by_task[task]
+        )
+
+    if process_required and lambda_process > 0.0:
         availability = process_availability_gate(
             rows,
             max_missing_rate=max_missing_rate,
@@ -380,15 +567,78 @@ def build_training_selection(
             metrics[f"agentflow/dynamic_kept_{task.value}"] = float(
                 selection.per_task_selected[task] if selection.complete else 0
             )
+    metrics.update(
+        advantage_diagnostic_metrics(
+            result,
+            rows,
+            keys=trainable_keys,
+            scope="retained",
+        )
+    )
     return TrainingSelectionPlan(
         advantages=result,
         trainable_keys=tuple(trainable_keys),
         metrics=metrics,
+        algorithm_identity=(
+            advantage_revision,
+            int(max_turns),
+            float(lambda_process),
+            float(max_advantage),
+        ),
     )
 
 
 def training_state_path(root: str | Path, global_step: int) -> Path:
     return Path(root) / f"global_step_{global_step}" / "agentflow_state.json"
+
+
+def advantage_state_identity(
+    *, advantage_revision: str, max_turns: int, lambda_process: float
+) -> dict[str, Any]:
+    if advantage_revision != ADVANTAGE_REVISION:
+        raise ValueError(
+            f"unsupported advantage revision {advantage_revision!r}; "
+            f"expected {ADVANTAGE_REVISION!r}"
+        )
+    if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns <= 0:
+        raise ValueError("max_turns must be a positive integer")
+    if not math.isfinite(lambda_process) or lambda_process < 0.0:
+        raise ValueError("lambda_process must be finite and non-negative")
+    return {
+        "advantage_revision": advantage_revision,
+        "advantage_max_turns": max_turns,
+        "advantage_lambda_process": float(lambda_process),
+    }
+
+
+def validate_advantage_state_identity(
+    state: dict[str, Any],
+    *,
+    advantage_revision: str,
+    max_turns: int,
+    lambda_process: float,
+) -> None:
+    expected = advantage_state_identity(
+        advantage_revision=advantage_revision,
+        max_turns=max_turns,
+        lambda_process=lambda_process,
+    )
+    missing = [key for key in expected if key not in state]
+    if missing:
+        raise RuntimeError(
+            "checkpoint lacks RTG+LOO advantage identity fields "
+            f"{missing}; initialize a new experiment from the Planner weights"
+        )
+    mismatches = {
+        key: (state[key], value)
+        for key, value in expected.items()
+        if state[key] != value
+    }
+    if mismatches:
+        raise RuntimeError(
+            "checkpoint advantage identity does not match this run: "
+            f"{mismatches}; initialize a new experiment from the Planner weights"
+        )
 
 
 def write_step_metrics(
@@ -411,6 +661,23 @@ def write_step_metrics(
 
 
 class _AgentFlowTrainerMixin:
+    def _configured_advantage_identity(self) -> dict[str, Any]:
+        agentflow = self.config.get("agentflow", {})
+        return advantage_state_identity(
+            advantage_revision=str(agentflow["advantage_revision"]),
+            max_turns=int(agentflow["max_turns"]),
+            lambda_process=float(agentflow.get("lambda_process", 0.0)),
+        )
+
+    def _configured_selection_identity(self) -> tuple[str, int, float, float]:
+        agentflow = self.config.get("agentflow", {})
+        return (
+            str(agentflow["advantage_revision"]),
+            int(agentflow["max_turns"]),
+            float(agentflow.get("lambda_process", 0.0)),
+            float(agentflow.get("max_advantage", 5.0)),
+        )
+
     def fit(self):
         from .training_loop import fit_data_epochs
 
@@ -422,7 +689,7 @@ class _AgentFlowTrainerMixin:
         return dp_size
 
 
-try:  # pragma: no cover - exercised by the pinned veRL runtime.
+try:  # pragma: no cover - exercised on the pinned remote veRL host.
     import torch
     from tensordict import TensorDict
 
@@ -441,6 +708,7 @@ except ModuleNotFoundError:
 
 
 if _VERL_AVAILABLE:
+
     class AgentFlowPPOTrainer(_AgentFlowTrainerMixin, PPOTrainer):
         def init_workers(self):
             result = super().init_workers()
@@ -475,20 +743,34 @@ if _VERL_AVAILABLE:
             if not path.exists():
                 raise RuntimeError(f"missing AgentFlow training state: {path}")
             state = json.loads(path.read_text(encoding="utf-8"))
+            identity = self._configured_advantage_identity()
+            validate_advantage_state_identity(
+                state,
+                **{
+                    "advantage_revision": identity["advantage_revision"],
+                    "max_turns": identity["advantage_max_turns"],
+                    "lambda_process": identity["advantage_lambda_process"],
+                },
+            )
             self._agentflow_successful_update_count = int(state["successful_updates"])
             self._agentflow_collection_batch_count = int(
-                state.get("collection_batches", state.get("collection_step", self.global_steps))
+                state.get(
+                    "collection_batches",
+                    state.get("collection_step", self.global_steps),
+                )
             )
-            marker = Path(self.config.trainer.default_local_dir) / "agentflow_reload.json"
+            marker = (
+                Path(self.config.trainer.default_local_dir) / "agentflow_reload.json"
+            )
             temporary = marker.with_suffix(".tmp")
             temporary.write_text(
                 json.dumps(
                     {
                         "loaded_collection_step": int(self.global_steps),
                         "loaded_successful_updates": self._successful_updates(),
-                        "state_sha256": __import__("hashlib").sha256(
-                            path.read_bytes()
-                        ).hexdigest(),
+                        "state_sha256": __import__("hashlib")
+                        .sha256(path.read_bytes())
+                        .hexdigest(),
                     },
                     indent=2,
                     sort_keys=True,
@@ -508,16 +790,19 @@ if _VERL_AVAILABLE:
             temporary.write_text(
                 json.dumps(
                     {
+                        **self._configured_advantage_identity(),
                         "collection_step": int(self.global_steps),
                         "collection_batches": self._collection_batches(),
                         "successful_updates": self._successful_updates(),
                         "configured_data_epochs": int(self.config.trainer.total_epochs),
                         "expected_collection_batches": int(
-                            len(self.train_dataloader) * self.config.trainer.total_epochs
+                            len(self.train_dataloader)
+                            * self.config.trainer.total_epochs
                         ),
                         "data_epoch_complete": bool(
                             self._collection_batches()
-                            >= len(self.train_dataloader) * self.config.trainer.total_epochs
+                            >= len(self.train_dataloader)
+                            * self.config.trainer.total_epochs
                         ),
                     },
                     indent=2,
@@ -543,22 +828,18 @@ if _VERL_AVAILABLE:
                 expected_update_id=str(self._successful_updates()),
                 lambda_process=lambda_process,
                 max_advantage=float(agentflow.get("max_advantage", 5.0)),
+                max_turns=int(agentflow["max_turns"]),
+                advantage_revision=str(agentflow["advantage_revision"]),
                 process_required=(
                     lambda_process > 0.0
                     and str(process_config.get("mode", "none")) != "none"
                 ),
-                max_missing_rate=float(
-                    process_config.get("max_missing_rate", 0.05)
-                ),
-                require_each_task=bool(
-                    process_config.get("require_each_task", True)
-                ),
+                max_missing_rate=float(process_config.get("max_missing_rate", 0.05)),
+                require_each_task=bool(process_config.get("require_each_task", True)),
                 dynamic_enabled=bool(
                     agentflow.get("dynamic_sampling", {}).get("enabled", False)
                 ),
-                per_task_quota=dynamic_quota_for_step(
-                    self._successful_updates() + 1
-                ),
+                per_task_quota=dynamic_quota_for_step(self._successful_updates() + 1),
                 train_prompt_group_count=int(self.config.data.train_batch_size),
                 expected_trajectories_per_group=int(
                     self.config.actor_rollout_ref.rollout.n
@@ -570,7 +851,9 @@ if _VERL_AVAILABLE:
             return plan
 
         def _generate_prompt_batch(self, batch_dict: dict) -> None:
-            limit = int(self.config.get("agentflow", {}).get("max_collection_steps", 1000))
+            limit = int(
+                self.config.get("agentflow", {}).get("max_collection_steps", 1000)
+            )
             if self._collection_batches() >= limit:
                 raise RuntimeError(
                     f"collection limit {limit} exhausted with "
@@ -579,22 +862,30 @@ if _VERL_AVAILABLE:
                 )
             prompt_batch = dict(batch_dict)
             prompt_batch["uid"] = np.array(
-                [str(uuid.uuid4()) for _ in range(len(prompt_batch["raw_prompt"]))], dtype=object
+                [str(uuid.uuid4()) for _ in range(len(prompt_batch["raw_prompt"]))],
+                dtype=object,
             )
             batch = tu.get_tensordict(prompt_batch)
             tu.assign_non_tensor_data(batch, "global_steps", self.global_steps)
             self.async_rollout_manager.generate_sequences(batch)
             self._agentflow_collection_batch_count = self._collection_batches() + 1
 
-        def step(self, batch_dict: dict, metrics: dict, timing_raw: dict) -> KVBatchMeta:
+        def step(
+            self, batch_dict: dict, metrics: dict, timing_raw: dict
+        ) -> KVBatchMeta:
             """Collect DAPO groups to quota before old log-prob and actor work."""
-            if self.config.algorithm.adv_estimator == core_algos.AdvantageEstimator.REMAX:
+            if (
+                self.config.algorithm.adv_estimator
+                == core_algos.AdvantageEstimator.REMAX
+            ):
                 raise ValueError("AgentFlow DAPO collection does not support REMAX")
             dynamic = self.config.get("agentflow", {}).get("dynamic_sampling", {})
             enabled = bool(dynamic.get("enabled", False))
             max_batches = int(dynamic.get("max_num_gen_batches", 1)) if enabled else 1
             if max_batches <= 0:
-                raise ValueError("dynamic_sampling.max_num_gen_batches must be positive")
+                raise ValueError(
+                    "dynamic_sampling.max_num_gen_batches must be positive"
+                )
             current_prompts = batch_dict
             batch = None
             plan = None
@@ -614,13 +905,23 @@ if _VERL_AVAILABLE:
                         keys=batch.keys,
                         metadata=as_metadata_list(metadata_data["extra_fields"]),
                     )
-                    metrics["agentflow/dynamic_generation_batches"] = float(round_index + 1)
-                    metrics["agentflow/dynamic_accumulated_turn_rows"] = float(len(batch.keys))
-                    if not enabled or plan.metrics.get("agentflow/dynamic_sampling_complete") == 1.0:
+                    metrics["agentflow/dynamic_generation_batches"] = float(
+                        round_index + 1
+                    )
+                    metrics["agentflow/dynamic_accumulated_turn_rows"] = float(
+                        len(batch.keys)
+                    )
+                    if (
+                        not enabled
+                        or plan.metrics.get("agentflow/dynamic_sampling_complete")
+                        == 1.0
+                    ):
                         break
                     provider = getattr(self, "_agentflow_replenishment_provider", None)
                     if provider is None:
-                        raise RuntimeError("DAPO replenishment requires a fresh prompt-batch provider")
+                        raise RuntimeError(
+                            "DAPO replenishment requires a fresh prompt-batch provider"
+                        )
                     current_prompts = provider()
                     if current_prompts is None:
                         epoch_tail_incomplete = True
@@ -665,7 +966,12 @@ if _VERL_AVAILABLE:
             )
             metadata = as_metadata_list(data["extra_fields"])
             batch_keys = tuple(str(key) for key in batch.keys)
-            if getattr(self, "_agentflow_selection_batch_keys", ()) == batch_keys:
+            if (
+                getattr(self, "_agentflow_selection_batch_keys", ()) == batch_keys
+                and getattr(self, "_agentflow_selection_plan", None) is not None
+                and self._agentflow_selection_plan.algorithm_identity
+                == self._configured_selection_identity()
+            ):
                 plan = self._agentflow_selection_plan
             else:
                 plan = self._prepare_training_selection(
@@ -673,7 +979,24 @@ if _VERL_AVAILABLE:
                 )
             result = plan.advantages
             trainable_keys = plan.trainable_keys
-            padded_mask = data.select("response_mask").to_padded_tensor()["response_mask"]
+            audit_identity = self._configured_advantage_identity()
+            write_advantage_audit(
+                self.config.trainer.default_local_dir,
+                int(self.global_steps),
+                advantage_audit_records(
+                    result,
+                    build_turn_rewards_from_metadata(
+                        keys=batch.keys, extra_fields=metadata
+                    ),
+                    retained_keys=trainable_keys,
+                    advantage_revision=audit_identity["advantage_revision"],
+                    max_turns=audit_identity["advantage_max_turns"],
+                    lambda_process=audit_identity["advantage_lambda_process"],
+                ),
+            )
+            padded_mask = data.select("response_mask").to_padded_tensor()[
+                "response_mask"
+            ]
             scalar = torch.tensor(
                 [result.combined[str(key)] for key in batch.keys],
                 dtype=torch.float32,
@@ -682,8 +1005,12 @@ if _VERL_AVAILABLE:
             token_advantages = scalar.unsqueeze(-1) * padded_mask
             fields_out = TensorDict(
                 {
-                    "advantages": response_to_nested(token_advantages, data["response_mask"]),
-                    "returns": response_to_nested(token_advantages, data["response_mask"]),
+                    "advantages": response_to_nested(
+                        token_advantages, data["response_mask"]
+                    ),
+                    "returns": response_to_nested(
+                        token_advantages, data["response_mask"]
+                    ),
                 },
                 batch_size=len(batch),
             )
@@ -699,7 +1026,9 @@ if _VERL_AVAILABLE:
             metrics.update(plan.metrics)
             return batch
 
-        def _compute_old_log_prob(self, batch: KVBatchMeta, metrics: dict) -> KVBatchMeta:
+        def _compute_old_log_prob(
+            self, batch: KVBatchMeta, metrics: dict
+        ) -> KVBatchMeta:
             data = tq.kv_batch_get(
                 keys=batch.keys,
                 partition_id=batch.partition_id,
@@ -787,7 +1116,9 @@ if _VERL_AVAILABLE:
             train_batch = tq.kv_batch_put(
                 keys=train_batch.keys,
                 partition_id=train_batch.partition_id,
-                fields=TensorDict({"attention_mask": attention_mask}, batch_size=len(train_batch)),
+                fields=TensorDict(
+                    {"attention_mask": attention_mask}, batch_size=len(train_batch)
+                ),
             )
             distillation_topk = (
                 self.distillation_config.distillation_loss.loss_settings.use_topk
@@ -802,7 +1133,8 @@ if _VERL_AVAILABLE:
                     seed=actor.data_loader_seed,
                     shuffle=actor.shuffle,
                     temperature=self.config.actor_rollout_ref.rollout.temperature,
-                    calculate_entropy=actor.calculate_entropy or actor.entropy_coeff != 0.0,
+                    calculate_entropy=actor.calculate_entropy
+                    or actor.entropy_coeff != 0.0,
                     distillation_use_topk=distillation_topk,
                 )
             )
@@ -815,9 +1147,7 @@ if _VERL_AVAILABLE:
             metrics["agentflow/actor_turn_mini_batch_size"] = float(
                 layout.mini_batch_size
             )
-            metrics["agentflow/actor_real_turn_count"] = float(
-                layout.real_turn_count
-            )
+            metrics["agentflow/actor_real_turn_count"] = float(layout.real_turn_count)
             metrics["agentflow/actor_padded_turn_count"] = float(
                 layout.padded_turn_count
             )
@@ -846,13 +1176,17 @@ if _VERL_AVAILABLE:
                 metrics,
             )
             return batch
+
 else:
+
     class AgentFlowPPOTrainer(_AgentFlowTrainerMixin):
         """Importable CPU stub; formal execution loads the pinned veRL trainer."""
 
 
 __all__ = [
     "AgentFlowPPOTrainer",
+    "advantage_audit_records",
+    "advantage_state_identity",
     "actor_update_metadata",
     "advantage_metrics_dict",
     "balanced_padded_key_order",
@@ -868,5 +1202,7 @@ __all__ = [
     "TrainingSelectionPlan",
     "TurnMiniBatchLayout",
     "write_step_metrics",
+    "write_advantage_audit",
+    "validate_advantage_state_identity",
     "zero_response_aligned_training_fields",
 ]
