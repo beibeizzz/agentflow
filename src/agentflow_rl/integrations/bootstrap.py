@@ -5,7 +5,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from agentflow_rl.backends.docker_sandbox import DockerSandboxBackend
 from agentflow_rl.backends.sandbox_http import HttpSandboxBackend
 from agentflow_rl.backends.bigcodebench import DockerBigCodeBenchBackend
 from agentflow_rl.backends.frozen_llm import (
@@ -13,12 +12,6 @@ from agentflow_rl.backends.frozen_llm import (
     OpenAICompatibleFrozenGateway,
 )
 from agentflow_rl.backends.serper import SerperSearchBackend
-from agentflow_rl.backends.smoke import (
-    AlternatingSmokeProcessScorer,
-    SmokePageReaderBackend,
-    SmokeSearchBackend,
-    SmokeWikipediaBackend,
-)
 from agentflow_rl.backends.web_reader import WebPageReaderBackend
 from agentflow_rl.backends.wikipedia_http import HttpWikipediaBackend
 from agentflow_rl.backends.query_analyzer_cache import QueryAnalyzerCache
@@ -59,6 +52,8 @@ def _openai_client(*, base_url: str, api_key: str, timeout_s: float):
 
 def build_runtime_bundle(config: Any, *, planner) -> RuntimeBundle:
     mode = str(config_value(config, "agentflow.environment_mode", "formal"))
+    if mode != "formal":
+        raise ValueError("beta release supports agentflow.environment_mode=formal")
     timeout_s = float(config_value(config, "agentflow.http_timeout_s", 60.0))
     coordination_dir = str(
         config_value(config, "agentflow.tools.coordination_dir", "/tmp/agentflow-locks")
@@ -82,72 +77,24 @@ def build_runtime_bundle(config: Any, *, planner) -> RuntimeBundle:
         role_max_input_tokens=config_value(
             config, "agentflow.role_max_input_tokens", None
         ),
-        tokenizer=_frozen_tokenizer(config, planner, mode),
+        tokenizer=_frozen_tokenizer(config),
     )
-    sandbox_image = (
-        _required(config, "agentflow.tools.sandbox_image")
-        if mode == "formal"
-        else config_value(
-            config, "agentflow.tools.sandbox_image", "agentflow-python-sandbox:smoke"
-        )
+    sandbox_image = _required(config, "agentflow.tools.sandbox_image")
+    sandbox = HttpSandboxBackend(
+        str(_required(config, "agentflow.tools.sandbox_service_url")),
+        expected_revision=str(
+            config_value(
+                config,
+                "agentflow.tools.sandbox_service_revision",
+                "python-sandbox-service-v1",
+            )
+        ),
+        timeout_s=float(
+            config_value(config, "agentflow.tools.sandbox_service_timeout_s", 30.0)
+        ),
     )
-    if mode == "formal":
-        sandbox = HttpSandboxBackend(
-            str(_required(config, "agentflow.tools.sandbox_service_url")),
-            expected_revision=str(
-                config_value(
-                    config,
-                    "agentflow.tools.sandbox_service_revision",
-                    "python-sandbox-service-v1",
-                )
-            ),
-            timeout_s=float(
-                config_value(config, "agentflow.tools.sandbox_service_timeout_s", 30.0)
-            ),
-        )
-    else:
-        sandbox = DockerSandboxBackend(
-            image=str(sandbox_image),
-            cpus=float(config_value(config, "agentflow.tools.sandbox_cpus", 1.0)),
-            memory=str(config_value(config, "agentflow.tools.sandbox_memory", "1g")),
-            output_limit_bytes=int(config_value(config, "agentflow.tools.sandbox_output_limit_bytes", 1_000_000)),
-            max_concurrency=int(
-                config_value(config, "agentflow.tools.sandbox_max_concurrency", 6)
-            ),
-            max_queue=int(
-                config_value(config, "agentflow.tools.sandbox_max_queue", 34)
-            ),
-            queue_admission_timeout_s=float(
-                config_value(
-                    config,
-                    "agentflow.tools.sandbox_queue_admission_timeout_s",
-                    0.05,
-                )
-            ),
-            coordination_dir=str(
-                config_value(
-                    config,
-                    "agentflow.tools.coordination_dir",
-                    "/tmp/agentflow-locks",
-                )
-            ),
-        )
-    bigcodebench_image = (
-        _required(config, "agentflow.tools.bigcodebench_image")
-        if mode == "formal"
-        else config_value(
-            config,
-            "agentflow.tools.bigcodebench_image",
-            "agentflow-bigcodebench-evaluator:smoke",
-        )
-    )
-    bigcodebench_revision = (
-        _required(config, "agentflow.tools.bigcodebench_revision")
-        if mode == "formal"
-        else config_value(
-            config, "agentflow.tools.bigcodebench_revision", "local-smoke"
-        )
-    )
+    bigcodebench_image = _required(config, "agentflow.tools.bigcodebench_image")
+    bigcodebench_revision = _required(config, "agentflow.tools.bigcodebench_revision")
     bigcodebench_backend = DockerBigCodeBenchBackend(
         image=str(bigcodebench_image),
         revision=str(bigcodebench_revision),
@@ -166,56 +113,51 @@ def build_runtime_bundle(config: Any, *, planner) -> RuntimeBundle:
         ),
     )
 
-    if mode == "smoke":
-        search_backend = SmokeSearchBackend()
-        page_reader = SmokePageReaderBackend()
-        wikipedia_backend = SmokeWikipediaBackend()
-    else:
-        key_env = str(config_value(config, "agentflow.tools.serper_key_env", "SERPER_API_KEY"))
-        search_backend = SerperSearchBackend(
-            api_key=os.environ.get(key_env, ""),
-            revision=str(
-                config_value(
-                    config, "agentflow.tools.serper_revision", "serper-search-v1"
-                )
-            ),
-            cache_path=str(_required(config, "agentflow.tools.serper_cache_path")),
-            coordination_dir=str(
-                config_value(
-                    config,
-                    "agentflow.tools.coordination_dir",
-                    "/tmp/agentflow-locks",
-                )
-            ),
-            max_concurrency=int(
-                config_value(config, "agentflow.tools.serper_max_concurrency", 40)
-            ),
-            max_attempts=int(
-                config_value(config, "agentflow.tools.serper_max_attempts", 3)
-            ),
-            backoff_s=float(
-                config_value(config, "agentflow.tools.serper_backoff_s", 0.5)
-            ),
-            cost_per_request_usd=float(
-                config_value(
-                    config, "agentflow.tools.serper_cost_per_request_usd", 0.001
-                )
-            ),
-        )
-        page_reader = WebPageReaderBackend(
-            timeout_s=timeout_s,
-            max_concurrency=int(
-                config_value(config, "agentflow.tools.web_reader_max_concurrency", 12)
-            ),
-            coordination_dir=coordination_dir,
-        )
-        wikipedia_backend = HttpWikipediaBackend(
-            str(_required(config, "agentflow.tools.wikipedia_service_url")),
-            expected_revision=str(
-                _required(config, "agentflow.tools.wikipedia_revision")
-            ),
-            timeout_s=timeout_s,
-        )
+    key_env = str(config_value(config, "agentflow.tools.serper_key_env", "SERPER_API_KEY"))
+    search_backend = SerperSearchBackend(
+        api_key=os.environ.get(key_env, ""),
+        revision=str(
+            config_value(
+                config, "agentflow.tools.serper_revision", "serper-search-v1"
+            )
+        ),
+        cache_path=str(_required(config, "agentflow.tools.serper_cache_path")),
+        coordination_dir=str(
+            config_value(
+                config,
+                "agentflow.tools.coordination_dir",
+                "/tmp/agentflow-locks",
+            )
+        ),
+        max_concurrency=int(
+            config_value(config, "agentflow.tools.serper_max_concurrency", 40)
+        ),
+        max_attempts=int(
+            config_value(config, "agentflow.tools.serper_max_attempts", 3)
+        ),
+        backoff_s=float(
+            config_value(config, "agentflow.tools.serper_backoff_s", 0.5)
+        ),
+        cost_per_request_usd=float(
+            config_value(
+                config, "agentflow.tools.serper_cost_per_request_usd", 0.001
+            )
+        ),
+    )
+    page_reader = WebPageReaderBackend(
+        timeout_s=timeout_s,
+        max_concurrency=int(
+            config_value(config, "agentflow.tools.web_reader_max_concurrency", 12)
+        ),
+        coordination_dir=coordination_dir,
+    )
+    wikipedia_backend = HttpWikipediaBackend(
+        str(_required(config, "agentflow.tools.wikipedia_service_url")),
+        expected_revision=str(
+            _required(config, "agentflow.tools.wikipedia_revision")
+        ),
+        timeout_s=timeout_s,
+    )
 
     retrieval_policy = {
         "read_top_k": int(config_value(config, "agentflow.tools.retrieval_read_top_k", 2)),
@@ -265,11 +207,7 @@ def build_runtime_bundle(config: Any, *, planner) -> RuntimeBundle:
     if process_mode in {"prm", "online_judge"}:
         from agentflow_rl.rewards.rubric import PROCESS_RUBRIC_REVISION, validate_rubric_revision
         validate_rubric_revision(str(config_value(config, "agentflow.process_reward.rubric_revision", PROCESS_RUBRIC_REVISION)))
-    if process_mode == "smoke_alternating":
-        if mode != "smoke":
-            raise ValueError("smoke_alternating process reward requires smoke mode")
-        process_scorer = AlternatingSmokeProcessScorer()
-    elif process_mode == "prm":
+    if process_mode == "prm":
         process_scorer = LearnedProcessScorer(
             HttpProcessRewardBackend(
                 str(_required(config, "agentflow.process_reward.endpoint")),
@@ -370,10 +308,8 @@ def _load_tokenizer(path: str):
     return AutoTokenizer.from_pretrained(path, use_fast=True, local_files_only=True)
 
 
-def _frozen_tokenizer(config, planner, mode):
+def _frozen_tokenizer(config):
     path = config_value(config, "agentflow.frozen_tokenizer_path") or os.environ.get("FROZEN_MODEL_PATH")
     if path:
         return _load_tokenizer(str(path))
-    if mode == "smoke":
-        return getattr(planner, "tokenizer", None)
     raise ValueError("Set agentflow.frozen_tokenizer_path or FROZEN_MODEL_PATH to the served frozen checkpoint")
