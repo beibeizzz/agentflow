@@ -132,11 +132,11 @@ metrics:
     availability: native
     definition: One terminal reward per completed trajectory; report candidate and retained distributions independently.
     source: trajectory_verification_and_selection_membership
-  - id: train.rtg_loo_support
+  - id: train.grpo_support
     unit: prompt_groups_turns_and_configuration
     grain: every_collection
     availability: native
-    definition: RTG+LOO algorithm identity, fixed horizon, process weight, singleton groups, complete-score RTG groups, terminal-only fallback groups, RTG turns, missing-score turns and clipped turns; report candidate and retained populations separately.
+    definition: GRPO algorithm identity, turn budget, process weight, singleton groups, complete-score value groups, terminal-only fallback groups, value turns, missing-score turns and clipped turns; report candidate and retained populations separately.
     native_mapping:
       revision: agentflow/advantage_revision
       horizon: agentflow/advantage_horizon
@@ -144,7 +144,7 @@ metrics:
       singleton_groups: agentflow/singleton_group_count
       complete_groups: agentflow/process_complete_group_count
       fallback_groups: agentflow/process_fallback_group_count
-      rtg_turns: agentflow/process_rtg_turn_count
+      value_turns: agentflow/process_value_turn_count
       missing_turns: agentflow/process_missing_turn_count
       clipped_turns: agentflow/clipped_turn_count
     source: advantage_metrics
@@ -152,7 +152,7 @@ metrics:
     unit: advantage
     grain: planner_turn_by_task_and_turn_index
     availability: required_capture
-    definition: Raw PRM score, fixed-horizon process RTG, total return, terminal/process LOO baselines, terminal advantage, unweighted process advantage, lambda-weighted process advantage, pre-clip combined advantage and final combined advantage; retain prompt-group and trajectory identity.
+    definition: Raw PRM value, mixed reward, population mean/std/scope, E2 terminal-reference advantage, shared-denominator terminal/process components, lambda-weighted process component, pre-clip and final advantage; retain prompt-group and trajectory identity.
     source: AdvantageResult_and_reward_rows_before_actor_update
     note: Capture component values before temporary batch data is cleared.
   - id: train.credit_diagnostics
@@ -198,16 +198,16 @@ metrics:
     source: rollout_extra_fields_and_scorer_events
     gate: global_missing_rate_le_0point05_and_each_present_task_supported
     note: Recompute task counts from actual task-name values; retain successful score zero as available.
-  - id: process.rtg_availability
+  - id: process.value_availability
     unit: counts_and_fractions
     grain: prompt_group_and_task_by_candidate_or_retained_population
     availability: native
-    definition: Raw-score availability and valid RTG availability use separate counts. A single missing valid-turn score marks the whole prompt group as terminal-only fallback while preserving acquired raw scores.
+    definition: Raw-score availability and applied process-value availability use separate counts. A single missing valid-turn score marks the whole prompt group as terminal-only fallback while preserving acquired raw scores.
     native_mapping:
       candidate_raw_available: agentflow/candidate_prm_score_available_turn_count
-      candidate_rtg_available: agentflow/candidate_process_rtg_available_turn_count
+      candidate_value_available: agentflow/candidate_process_value_available_turn_count
       retained_raw_available: agentflow/retained_prm_score_available_turn_count
-      retained_rtg_available: agentflow/retained_process_rtg_available_turn_count
+      retained_value_available: agentflow/retained_process_value_available_turn_count
     source: AdvantageResult_and_reward_rows_before_actor_update
   - id: process.label_quality
     unit: fractions

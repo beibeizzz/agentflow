@@ -6,7 +6,7 @@ from typing import Any, Sequence
 from .schemas import ProcessTransition
 from agentflow_rl.runtime.observations import action_view, pick, tool_observation
 
-PROCESS_VIEW_REVISION = "process-transition-view-v5"
+PROCESS_VIEW_REVISION = "process-transition-view-v6"
 
 def _model_source(transition: ProcessTransition) -> dict[str, Any]:
     source = transition.model_dump(mode="json")
@@ -77,6 +77,8 @@ def process_transition_payload(
     }
     current: dict[str, Any] = {
         "turn_index": source["turn_index"],
+        "max_turns": source["max_turns"],
+        "remaining_planner_turns": source["max_turns"] - source["turn_index"] - 1,
     }
     truncated_fields: list[str] = []
     for field, budget in budgets.items():
@@ -119,7 +121,7 @@ def render_process_transition(
     tokenizer: Any = None,
     max_length: int = 8192,
 ) -> str:
-    instruction = "Assess the quality of this AgentFlow Planner transition.\n"
+    instruction = "Estimate terminal-directed continuation value after this AgentFlow Planner transition.\n"
     payload = process_transition_payload(
         transition, max_chars=max_chars - len(instruction),
     )

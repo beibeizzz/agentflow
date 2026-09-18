@@ -23,12 +23,14 @@ def build_process_transition(
     task: PublicTaskRecord,
     trajectory_id: str,
     turn: PlannerTurnRecord,
+    max_turns: int = 5,
 ) -> ProcessTransition:
     return ProcessTransition(
         transition_id=f"{trajectory_id}:{turn.turn_index}",
         trajectory_id=trajectory_id,
         task=task,
         turn_index=turn.turn_index,
+        max_turns=max_turns,
         memory_before_action=turn.memory_before_action,
         planner_response=turn.generation.response,
         planner_action=turn.action,

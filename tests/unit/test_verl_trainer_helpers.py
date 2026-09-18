@@ -496,10 +496,10 @@ def test_advantage_audit_preserves_components_and_retained_membership() -> None:
         lambda_process=0.3,
     )
     assert records[0]["raw_process_score"] == 0.8
-    assert records[0]["process_return"] == pytest.approx(0.16)
+    assert records[0]["process_value"] == pytest.approx(0.8)
     assert records[0]["retained_for_actor"] is True
     assert records[1]["retained_for_actor"] is False
-    assert records[0]["raw_combined_advantage"] == pytest.approx(1.036)
+    assert records[0]["raw_combined_advantage"] == pytest.approx(1.0)
 
 
 def test_training_state_path_tracks_collection_checkpoint(tmp_path) -> None:
@@ -520,7 +520,7 @@ def test_checkpoint_advantage_identity_rejects_legacy_and_mismatch() -> None:
         max_turns=5,
         lambda_process=0.3,
     )
-    with pytest.raises(RuntimeError, match=r"lacks RTG\+LOO"):
+    with pytest.raises(RuntimeError, match=r"lacks GRPO"):
         validate_advantage_state_identity(
             {},
             advantage_revision=ADVANTAGE_REVISION,

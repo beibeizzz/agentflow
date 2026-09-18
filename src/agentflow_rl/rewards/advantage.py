@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import fsum, isfinite, sqrt
 from typing import Iterable
 
 from agentflow_rl.runtime.contracts import TaskName
 
 
-ADVANTAGE_REVISION = "terminal_prm_rtg_loo_v1"
+ADVANTAGE_REVISION = "terminal_broadcast_mixed_turn_grpo_v1"
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,7 @@ class TurnAdvantageMetrics:
     singleton_group_count: int
     process_complete_group_count: int
     process_fallback_group_count: int
-    process_rtg_turn_count: int
+    process_value_turn_count: int
     process_missing_turn_count: int
     clipped_turn_count: int
 
@@ -74,14 +74,17 @@ class AdvantageResult:
     combined: dict[str, float]
     terminal: dict[str, float]
     process: dict[str, float]
-    process_return: dict[str, float | None]
-    total_return: dict[str, float | None]
-    terminal_baseline: dict[str, float]
-    process_baseline: dict[str, float | None]
+    process_value: dict[str, float | None]
+    mixed_reward: dict[str, float | None]
+    terminal_mean: dict[str, float]
+    process_mean: dict[str, float | None]
     weighted_process: dict[str, float]
     raw_combined: dict[str, float]
     raw_process_score: dict[str, float | None]
-    trajectory_utility: dict[tuple[str, str], float | None]
+    normalization_mean: dict[str, float]
+    normalization_std: dict[str, float]
+    normalization_scope: dict[str, str]
+    terminal_reference: dict[str, float]
     process_group_status: dict[str, str]
     process_complete_groups_by_task: dict[TaskName, int]
     process_fallback_groups_by_task: dict[TaskName, int]
@@ -123,7 +126,15 @@ def compute_turn_advantages(
     epsilon: float = 1e-6,
     advantage_revision: str = ADVANTAGE_REVISION,
 ) -> AdvantageResult:
-    """Construct prompt-group RTG+LOO advantages before actor mini-batching."""
+    """Normalize complete prompt groups before selection and actor mini-batching.
+
+    E2 (lambda_process=0) standardizes one reward per trajectory, then
+    broadcasts. E3 standardizes R + lambda*p over all real valid turns.
+    Any missing score in an E3 group triggers the exact E2 fallback.
+    Population standard deviation is used; std <= epsilon produces zeros.
+    Terminal/process components in E3 share the mixed-reward denominator.
+    terminal_reference always records the counterfactual E2 advantage.
+    """
     _validate_parameters(
         lambda_process=lambda_process,
         max_advantage=max_advantage,
@@ -184,14 +195,17 @@ def compute_turn_advantages(
     combined = {item.key: 0.0 for item in items}
     terminal = {item.key: 0.0 for item in items}
     process = {item.key: 0.0 for item in items}
-    process_return: dict[str, float | None] = {item.key: None for item in items}
-    total_return: dict[str, float | None] = {item.key: None for item in items}
-    terminal_baseline = {item.key: 0.0 for item in items}
-    process_baseline: dict[str, float | None] = {item.key: None for item in items}
+    process_value: dict[str, float | None] = {item.key: None for item in items}
+    mixed_reward: dict[str, float | None] = {item.key: None for item in items}
+    terminal_mean = {item.key: 0.0 for item in items}
+    process_mean: dict[str, float | None] = {item.key: None for item in items}
     weighted_process = {item.key: 0.0 for item in items}
     raw_combined = {item.key: 0.0 for item in items}
     raw_process_score = {item.key: item.process_score for item in items}
-    trajectory_utility: dict[tuple[str, str], float | None] = {}
+    normalization_mean = {item.key: 0.0 for item in items}
+    normalization_std = {item.key: 0.0 for item in items}
+    normalization_scope = {item.key: "invalid" for item in items}
+    terminal_reference = {item.key: 0.0 for item in items}
     process_group_status: dict[str, str] = {}
     process_complete_groups_by_task = {task: 0 for task in TaskName}
     process_fallback_groups_by_task = {task: 0 for task in TaskName}
@@ -203,7 +217,7 @@ def compute_turn_advantages(
     singleton_group_count = 0
     complete_group_count = 0
     fallback_group_count = 0
-    process_rtg_turn_count = 0
+    process_value_turn_count = 0
     process_missing_turn_count = 0
     clipped_turn_count = 0
 
@@ -237,74 +251,54 @@ def compute_turn_advantages(
         process_missing_turn_count += missing_in_group
         process_complete = missing_in_group == 0
 
-        rtg_by_trajectory: dict[tuple[str, str], list[float]] = {}
-        if process_complete:
+        use_process = lambda_process > 0.0 and process_complete
+        if lambda_process == 0.0:
+            process_group_status[group_id] = "disabled"
+        elif process_complete:
             process_group_status[group_id] = "complete"
             complete_group_count += 1
             process_complete_groups_by_task[task_name] += 1
-            for identity in valid_identities:
-                trajectory = trajectory_rows[identity]
-                returns = [0.0] * max_turns
-                running = 0.0
-                for item in reversed(trajectory):
-                    running += float(item.process_score)
-                    returns[item.turn_index] = running / max_turns
-                rtg_by_trajectory[identity] = returns
-                trajectory_utility[identity] = (
-                    trajectory[0].terminal_reward + lambda_process * returns[0]
-                )
-                for item in trajectory:
-                    process_return[item.key] = returns[item.turn_index]
-                    total_return[item.key] = (
-                        item.terminal_reward + lambda_process * returns[item.turn_index]
-                    )
-                    process_rtg_turn_count += 1
         else:
             process_group_status[group_id] = "terminal_only_missing_process_score"
             fallback_group_count += 1
             process_fallback_groups_by_task[task_name] += 1
-            for identity in valid_identities:
-                trajectory_utility[identity] = None
 
-        terminal_sum = sum(
-            trajectory_rows[identity][0].terminal_reward
-            for identity in valid_identities
-        )
-        process_sums = (
-            [
-                sum(rtg_by_trajectory[identity][turn] for identity in valid_identities)
-                for turn in range(max_turns)
-            ]
-            if process_complete
-            else None
-        )
-        denominator = len(valid_identities) - 1
+        group_rows = [item for identity in valid_identities for item in trajectory_rows[identity]]
+        rewards = [trajectory_rows[identity][0].terminal_reward for identity in valid_identities]
+
+        def moments(values: list[float]) -> tuple[float, float]:
+            mean = fsum(values) / len(values)
+            return mean, sqrt(fsum((value - mean) ** 2 for value in values) / len(values))
+
+        reward_mean, reward_std = moments(rewards)
+        if use_process:
+            values = [item.terminal_reward + lambda_process * float(item.process_score) for item in group_rows]
+            group_mean, group_std = moments(values)
+            terminal_center = fsum(item.terminal_reward for item in group_rows) / len(group_rows)
+            process_center = fsum(float(item.process_score) for item in group_rows) / len(group_rows)
+        else:
+            group_mean, group_std = reward_mean, reward_std
+            terminal_center, process_center = reward_mean, 0.0
 
         for identity in valid_identities:
-            trajectory = trajectory_rows[identity]
-            terminal_reward = trajectory[0].terminal_reward
-            out_baseline = (
-                (terminal_sum - terminal_reward) / denominator
-                if denominator > 0
-                else 0.0
-            )
-            out_advantage = terminal_reward - out_baseline
-            for item in trajectory:
-                terminal[item.key] = out_advantage
-                terminal_baseline[item.key] = out_baseline
-                proc_advantage = 0.0
-                if process_complete:
-                    own_return = rtg_by_trajectory[identity][item.turn_index]
-                    proc_baseline = (
-                        (process_sums[item.turn_index] - own_return) / denominator
-                        if denominator > 0
-                        else 0.0
-                    )
-                    process_baseline[item.key] = proc_baseline
-                    proc_advantage = own_return - proc_baseline
-                process[item.key] = proc_advantage
-                weighted_process[item.key] = lambda_process * proc_advantage
-                raw = out_advantage + weighted_process[item.key]
+            for item in trajectory_rows[identity]:
+                terminal_reference[item.key] = (
+                    (item.terminal_reward - reward_mean) / reward_std if reward_std > epsilon else 0.0
+                )
+                normalization_mean[item.key] = group_mean
+                normalization_std[item.key] = group_std
+                normalization_scope[item.key] = "all_real_turns" if use_process else "trajectories"
+                terminal_mean[item.key] = terminal_center
+                own_process = float(item.process_score) if use_process else 0.0
+                mixed_reward[item.key] = item.terminal_reward + lambda_process * own_process
+                if use_process:
+                    process_value[item.key] = own_process
+                    process_mean[item.key] = process_center
+                    process_value_turn_count += 1
+                terminal[item.key] = (item.terminal_reward - terminal_center) / group_std if group_std > epsilon else 0.0
+                process[item.key] = (own_process - process_center) / group_std if use_process and group_std > epsilon else 0.0
+                weighted_process[item.key] = lambda_process * process[item.key]
+                raw = (mixed_reward[item.key] - group_mean) / group_std if group_std > epsilon else 0.0
                 raw_combined[item.key] = raw
                 value = min(max(raw, -max_advantage), max_advantage)
                 if value != raw:
@@ -319,14 +313,17 @@ def compute_turn_advantages(
         combined=combined,
         terminal=terminal,
         process=process,
-        process_return=process_return,
-        total_return=total_return,
-        terminal_baseline=terminal_baseline,
-        process_baseline=process_baseline,
+        process_value=process_value,
+        mixed_reward=mixed_reward,
+        terminal_mean=terminal_mean,
+        process_mean=process_mean,
         weighted_process=weighted_process,
         raw_combined=raw_combined,
         raw_process_score=raw_process_score,
-        trajectory_utility=trajectory_utility,
+        normalization_mean=normalization_mean,
+        normalization_std=normalization_std,
+        normalization_scope=normalization_scope,
+        terminal_reference=terminal_reference,
         process_group_status=process_group_status,
         process_complete_groups_by_task=process_complete_groups_by_task,
         process_fallback_groups_by_task=process_fallback_groups_by_task,
@@ -345,7 +342,7 @@ def compute_turn_advantages(
             singleton_group_count=singleton_group_count,
             process_complete_group_count=complete_group_count,
             process_fallback_group_count=fallback_group_count,
-            process_rtg_turn_count=process_rtg_turn_count,
+            process_value_turn_count=process_value_turn_count,
             process_missing_turn_count=process_missing_turn_count,
             clipped_turn_count=clipped_turn_count,
         ),

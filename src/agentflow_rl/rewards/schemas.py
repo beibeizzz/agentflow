@@ -31,6 +31,7 @@ class ProcessTransition(StrictFrozenModel):
     trajectory_id: str = Field(min_length=1)
     task: PublicTaskRecord
     turn_index: int = Field(ge=0)
+    max_turns: int = Field(default=5, gt=0)
     memory_before_action: tuple[dict[str, Any], ...]
     planner_response: str
     planner_action: PlannerAction | None
@@ -44,6 +45,8 @@ class ProcessTransition(StrictFrozenModel):
 
     @model_validator(mode="after")
     def enforce_public_boundary(self) -> "ProcessTransition":
+        if self.turn_index >= self.max_turns:
+            raise ValueError("process turn_index must be below max_turns")
         assert_public_payload(
             self.memory_before_action,
             path=f"process_transition[{self.transition_id}].memory",

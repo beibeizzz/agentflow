@@ -13,9 +13,22 @@ AgentFlow RL 是统一、模块化的 reasoning agent 训练与评测实现。�
 - `Google_Search_Tool`：Serper 搜索与安全网页读取。
 - `Wikipedia_Search_Tool`：Wikipedia-18 BM25 与 E5-HNSW64 混合检索。
 
-训练使用 Qwen3-4B Planner LoRA（rank 64、alpha 128）、GSPO sequence-level loss、RTG+LOO 优势和 DAPO 在线动态采样。冻结角色与 Base Generator 使用 Qwen3-8B，PRM 使用 Qwen3-0.6B。
+训练使用 Qwen3-4B Planner LoRA（rank 64、alpha 128）、GSPO sequence-level loss、组标准化 优势和 DAPO 在线动态采样。冻结角色与 Base Generator 使用 Qwen3-8B，PRM 使用 Qwen3-0.6B。
 
-优势算法 revision 为 `terminal_prm_rtg_loo_v1`。每条有效轨迹的原始 PRM 分数按逆序累加，并除以固定的五轮上限，得到各轮过程 reward-to-go。终局奖励和过程 RTG 分别减去同一 prompt group 中其他有效完整轨迹的 leave-one-out 均值；较短轨迹结束后的过程回报按零参与后续轮次的基线。`lambda_process=0.30` 加权过程优势。组内任一有效 turn 缺少 PRM 分数时，整个 group 使用 terminal-only LOO。checkpoint 恢复要求算法 revision、最大轮数和过程权重完全一致。
+优势算法 revision 为 `terminal_broadcast_mixed_turn_grpo_v1`：
+
+- E2：同题每条轨迹恰好贡献一个终局奖励，先求总体均值与标准差，再把标准化优势广播到该轨迹各真实 turn。
+- E3：每个真实 turn 使用 `m=R+0.5*p`，然后对同题所有真实 turn 的 m 一次标准化。结束后的虚拟轮次、无效轨迹和 padding 排除；过程分数直接使用一次。
+- 标准差 <= 1e-6 时优势为零，否则 `(value-mean)/std`，最后保留 [-5,5] 裁剪。缺任一有效 PRM 分数则该组回退到 E2。零分保持有效，5% 缺分门继续执行。
+
+`lambda_process=0` 选择 E2，正式 E3 为 `0.5`。优势在 actor 分批前确定；审计保存混合奖励、总体均值/标准差、归一化范围、E2 参照和最终优势。checkpoint 恢复要求算法 revision、最大轮数和过程权重一致。旧 LOO/RTG 状态已停用。
+
+PRM 的新目标为本轮工具执行后、剩余预算内的预期累计环境回报。中间环境奖励为零，因此目标等于预期终局奖励。标签采用固定初始 Planner 参考继续策略，冻结角色、工具与解码在采集 manifest 中固定；不同 E2 阶段只负责产生不同前缀。Judge 只看公开前缀估值，Qwen3-0.6B 用 sigmoid-MSE 蒸馏，形成过程价值代理，在线通过 `process_score` 接口提供辅助奖励。旧 `planner-progress-rubric-v2` / `process-transition-view-v5` 标签和模型必须重新标注、训练；当前要求 `planner-continuation-value-rubric-v3` / `process-transition-view-v6`。
+
+终局 `J=E[R]` 保持为评价目标。理想的同策略准确价值可减少终局采样噪声；实际 Judge 偏差、参考策略差异、组标准化与长度权重会改变优化方向。E3 相对 E2 同时改变辅助信号和标准化总体，需用分层校准、同批优势对照、开发终局指标及冗余行为分析归因。
+
+研究依据：[AgentFlow 式 7](https://arxiv.org/html/2510.05592v1)支持 E2 的轨迹标准化广播；[DeepSeekMath](https://arxiv.org/html/2402.03300v3)的过程方案在标准化后另有未来累加，本项目只采用组内标准化思路；[Tree of Thoughts](https://arxiv.org/html/2305.10601v2)提供语言模型估值先例，[AlphaLLM](https://arxiv.org/html/2404.12253v2)与[ReST-MCTS*](https://arxiv.org/html/2406.03816v3)提供监督价值学习依据。项目采用的 Judge 软价值标签和全 turn 混合组合仍需独立验证。
+
 
 ## 目录
 
@@ -55,7 +68,7 @@ bash scripts/runtime/check_environment.sh
 
 `runtime` extra 固定 veRL、vLLM 和 TransferQueue 版本。模型、数据、索引和镜像均使用不可变 revision。
 
-本次评测入口、RTG+LOO 和 padding 生命周期的聚焦 CPU 回归可在无模型权重、无外部服务的环境运行：
+本次评测入口、组标准化 和 padding 生命周期的聚焦 CPU 回归可在无模型权重、无外部服务的环境运行：
 
 ```bash
 python -m pip install -e ".[test,data]"
@@ -144,7 +157,7 @@ export PRM_OUTPUT=outputs/prm/formal/training-ddp
 bash scripts/runtime/train_prm_ddp.sh
 ```
 
-PRM 输入包括任务 query、统一评分指令、当前决策前的有效 Memory、Planner action、Executor 核心请求和工具核心结果。训练与在线打分使用同一个序列化协议。
+PRM 输入包括公开任务、当前决策前的有效 Memory、本轮 Planner 原始输出与 action、Executor 核心请求、工具语义化结果及剩余规划预算。历史包含 Query Analyzer、此前 action/request/result/Verifier 反馈。当前 Verifier、真实未来和私有答案排除。完整 rubric 属于离线 Judge 的 system prompt；learned PRM 使用共享的 8192-token transition 文本，训练与在线打分保持一致。标注前固定参考继续系统的模型、环境、解码和预算 manifest，新模型上线前完成标签审核、价值校准与 Transformers/vLLM 对照。
 
 ## Preflight 与 Planner 训练
 
@@ -157,7 +170,7 @@ bash scripts/runtime/run_real_preflight.sh
 bash scripts/runtime/run_unified_train.sh
 ```
 
-正式配置采集 8 个候选 prompt group，每组 5 条轨迹；DAPO 只按终局奖励方差过滤，并补采样到 4 个合格 group 或达到生成上限。筛选、RTG+LOO、PRM 可用性和策略新鲜度只读取真实轨迹视图。Old-log-prob 按实际 DP 大小建立临时执行视图，Actor 按 32 行建立临时执行视图；两处 synthetic padding 均带 `is_padding=True`，完成 worker 调用后从 TQ 与 ReplayBuffer 回收。Actor 使用动态 token batch、`ppo_mini_batch_size=32`、`ppo_max_token_len_per_gpu=40960`、学习率 `1e-6`、一个数据 epoch 和零 KL。默认训练目录分别为 `outputs/train/rtg_loo_terminal` 与 `outputs/train/rtg_loo_prm`。
+正式配置采集 8 个候选 prompt group，每组 5 条轨迹；DAPO 只按终局奖励方差过滤，并补采样到 4 个合格 group 或达到生成上限。筛选、组标准化、PRM 可用性和策略新鲜度只读取真实轨迹视图。Old-log-prob 按实际 DP 大小建立临时执行视图，Actor 按 32 行建立临时执行视图；两处 synthetic padding 均带 `is_padding=True`，完成 worker 调用后从 TQ 与 ReplayBuffer 回收。Actor 使用动态 token batch、`ppo_mini_batch_size=32`、`ppo_max_token_len_per_gpu=40960`、学习率 `1e-6`、一个数据 epoch 和零 KL。默认训练目录分别为 `outputs/train/grpo_terminal` 与 `outputs/train/grpo_prm`。
 
 ## E0-E3 评测
 

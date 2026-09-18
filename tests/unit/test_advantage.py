@@ -38,7 +38,7 @@ def row(
 def advantages(rows, **overrides):
     parameters = {
         "max_turns": 5,
-        "lambda_process": 0.3,
+        "lambda_process": 0.5,
         "max_advantage": 5.0,
         "advantage_revision": ADVANTAGE_REVISION,
     }
@@ -46,162 +46,87 @@ def advantages(rows, **overrides):
     return compute_turn_advantages(rows, **parameters)
 
 
-def test_required_numeric_example_matches_rtg_loo_definition() -> None:
-    result = advantages(
-        (
-            row("a", 0, 1.0, 0.2),
-            row("a", 1, 1.0, 0.8),
-            row("b", 0, 0.0, 0.4),
-        )
-    )
-    assert result.process_return["a:0"] == pytest.approx(0.20)
-    assert result.process_return["a:1"] == pytest.approx(0.16)
-    assert result.process_return["b:0"] == pytest.approx(0.08)
-    assert result.terminal["a:0"] == pytest.approx(1.0)
-    assert result.terminal["a:1"] == pytest.approx(1.0)
-    assert result.terminal["b:0"] == pytest.approx(-1.0)
-    assert result.process["a:0"] == pytest.approx(0.12)
-    assert result.process["a:1"] == pytest.approx(0.16)
-    assert result.process["b:0"] == pytest.approx(-0.12)
-    assert result.combined == pytest.approx({"a:0": 1.036, "a:1": 1.048, "b:0": -1.036})
-    assert result.total_return["a:0"] == pytest.approx(1.06)
-    assert result.total_return["a:1"] == pytest.approx(1.048)
+def example_rows():
+    scores = [[.5,.1,.1,.9,.6],[.5,.5],[.5,0],[.5,0],[.5]]
+    return [row(chr(97+i), t, float(i == 0), p) for i, ps in enumerate(scores) for t, p in enumerate(ps)]
 
 
-def test_future_process_scores_assign_delayed_credit_to_earlier_turn() -> None:
-    result = advantages(
-        (
-            row("a", 0, 0.0, 0.2),
-            row("a", 1, 0.0, 0.8),
-            row("b", 0, 0.0, 0.2),
-            row("b", 1, 0.0, 0.0),
-        )
-    )
-    assert result.process["a:0"] == pytest.approx(0.16)
-    assert result.process["b:0"] == pytest.approx(-0.16)
+def test_user_twelve_turn_numeric_example():
+    result = advantages(example_rows())
+    expected = [1.202861,.825493,.825493,1.580230,1.297203,-.683980,-.683980,-.683980,-1.155690,-.683980,-1.155690,-.683980]
+    assert [result.combined[r.key] for r in example_rows()] == pytest.approx(expected, abs=5e-7)
+    assert result.normalization_mean['a:0'] == pytest.approx(.6125)
+    assert result.normalization_std['a:0'] == pytest.approx(.5299862419597953)
+    assert sum(result.combined.values()) == pytest.approx(0, abs=1e-12)
+    assert sum(v*v for v in result.combined.values())/12 == pytest.approx(1)
+    for key in result.combined:
+        assert result.terminal[key]+result.weighted_process[key] == pytest.approx(result.raw_combined[key])
 
 
-def test_ended_trajectories_contribute_zero_absorbing_tail() -> None:
-    result = advantages(
-        (
-            row("long", 0, 0.0, 0.1),
-            row("long", 1, 0.0, 0.9),
-            row("short", 0, 0.0, 0.1),
-        )
-    )
-    assert result.process_baseline["long:1"] == 0.0
-    assert result.process["long:1"] == pytest.approx(0.18)
+def test_e2_normalizes_trajectories_before_broadcast_not_expanded_rows():
+    result = advantages(example_rows(), lambda_process=0)
+    for r in example_rows():
+        assert result.combined[r.key] == pytest.approx(2 if r.trajectory_id == 'a' else -.5)
+        assert result.normalization_scope[r.key] == 'trajectories'
+    assert result.metrics.process_fallback_group_count == 0
 
 
-def test_raw_process_scale_is_preserved() -> None:
-    base = advantages((row("a", 0, 0.0, 0.2), row("b", 0, 0.0, 0.1)))
-    scaled = advantages((row("a", 0, 0.0, 0.4), row("b", 0, 0.0, 0.2)))
-    assert scaled.process["a:0"] == pytest.approx(2 * base.process["a:0"])
-    assert scaled.process["b:0"] == pytest.approx(2 * base.process["b:0"])
-
-
-def test_terminal_reward_is_included_once_in_every_real_turn_return() -> None:
-    result = advantages(
-        (
-            row("a", 0, 0.7, 0.5),
-            row("a", 1, 0.7, 0.5),
-            row("b", 0, 0.2, 0.0),
-        )
-    )
-    assert result.total_return["a:0"] == pytest.approx(0.7 + 0.3 * 0.2)
-    assert result.total_return["a:1"] == pytest.approx(0.7 + 0.3 * 0.1)
-    assert result.total_return["b:0"] == pytest.approx(0.2)
-
-
-def test_input_order_does_not_change_keyed_results() -> None:
-    rows = (
-        row("a", 1, 1.0, 0.8),
-        row("b", 0, 0.0, 0.4),
-        row("a", 0, 1.0, 0.2),
-    )
-    forward = advantages(rows)
-    reverse = advantages(reversed(rows))
-    assert forward.combined == reverse.combined
-    assert forward.process_return == reverse.process_return
-
-
-def test_prompt_groups_are_isolated_when_task_id_matches() -> None:
-    rows = (
-        row("a", 0, 1.0, 0.6, prompt_group_id="g1", key="g1-a"),
-        row("b", 0, 0.0, 0.2, prompt_group_id="g1", key="g1-b"),
-        row("c", 0, 0.5, 0.7, prompt_group_id="g2", key="g2-c"),
-        row("d", 0, 0.5, 0.7, prompt_group_id="g2", key="g2-d"),
-    )
+def test_e3_no_suffix_accumulation_or_absorbing_tail():
+    rows = [row('a',0,1,.2),row('a',1,1,.8),row('b',0,0,.4)]
     result = advantages(rows)
-    assert result.terminal["g1-a"] == 1.0
-    assert result.terminal["g1-b"] == -1.0
-    assert result.terminal["g2-c"] == 0.0
+    assert result.mixed_reward == pytest.approx({'a:0':1.1,'a:1':1.4,'b:0':.2})
+    assert result.process_value == pytest.approx({'a:0':.2,'a:1':.8,'b:0':.4})
+    assert result.normalization_mean['a:0'] == pytest.approx(.9)
+    assert advantages(rows,max_turns=9).combined == result.combined
 
 
-def test_missing_score_falls_back_entire_group_to_terminal_loo() -> None:
-    result = advantages(
-        (
-            row("a", 0, 1.0, 0.8),
-            row("a", 1, 1.0, None),
-            row("b", 0, 0.0, 0.2),
-        )
-    )
-    assert result.process == {"a:0": 0.0, "a:1": 0.0, "b:0": 0.0}
-    assert all(value is None for value in result.process_return.values())
-    assert result.raw_process_score == {"a:0": 0.8, "a:1": None, "b:0": 0.2}
-    assert result.combined == {"a:0": 1.0, "a:1": 1.0, "b:0": -1.0}
-    assert result.process_group_status["group-1"] == (
-        "terminal_only_missing_process_score"
-    )
+def test_missing_score_falls_back_whole_group_to_exact_e2():
+    rows = example_rows()
+    from dataclasses import replace
+    rows[1] = replace(rows[1], process_score=None)
+    result = advantages(rows)
+    assert result.combined == advantages(rows,lambda_process=0).combined
+    assert result.process_group_status['group-1'] == 'terminal_only_missing_process_score'
     assert result.metrics.process_fallback_group_count == 1
+    assert all(value is None for value in result.process_value.values())
+    assert result.raw_process_score['a:0'] == .5
 
 
-def test_valid_zero_process_score_remains_available() -> None:
-    result = advantages((row("a", 0, 1.0, 0.0), row("b", 0, 0.0, 0.0)))
-    assert result.process_group_status["group-1"] == "complete"
+def test_zero_is_valid_and_singleton_or_constant_population_is_finite():
+    result = advantages([row('a',0,1,0),row('b',0,0,0)])
+    assert result.process_group_status['group-1'] == 'complete'
     assert result.metrics.process_missing_turn_count == 0
-    assert result.process_return["a:0"] == 0.0
+    assert result.combined == {'a:0':1,'b:0':-1}
+    for rows in ([row('a',0,.7,.5)], [row('a',0,.7,.5),row('b',0,.7,.5)]):
+        result = advantages(rows)
+        assert all(v == 0 for v in result.combined.values())
+        assert result.trainable_keys == ()
 
 
-def test_lambda_zero_is_terminal_loo_even_when_scores_are_missing() -> None:
-    result = advantages(
-        (row("a", 0, 1.0, None), row("b", 0, 0.0, None)),
-        lambda_process=0.0,
-    )
-    assert result.combined == {"a:0": 1.0, "b:0": -1.0}
+def test_invalid_trajectory_and_other_groups_do_not_change_statistics():
+    base = example_rows()
+    extended = base + [row('invalid',0,0,None,valid=False),row('other',0,0,0,prompt_group_id='g2',key='other')]
+    result = advantages(extended)
+    assert {r.key:result.combined[r.key] for r in base} == advantages(base).combined
+    assert result.invalid_keys == ('invalid:0',)
+    assert result.metrics.process_fallback_group_count == 0
 
 
-def test_singleton_uses_zero_baselines_without_division() -> None:
-    result = advantages((row("a", 0, 0.7, 0.5),))
-    assert result.terminal_baseline["a:0"] == 0.0
-    assert result.process_baseline["a:0"] == 0.0
-    assert result.combined["a:0"] == pytest.approx(0.7 + 0.3 * 0.1)
-    assert result.metrics.singleton_group_count == 1
+def test_keyed_values_are_order_invariant():
+    rows=example_rows()
+    assert advantages(rows).combined == advantages(reversed(rows)).combined
 
 
-def test_invalid_trajectory_is_excluded_from_both_baselines() -> None:
-    result = advantages(
-        (
-            row("a", 0, 1.0, 1.0),
-            row("b", 0, 0.0, 0.0),
-            row("infra", 0, 0.5, 0.5, valid=False),
-        )
-    )
-    assert result.terminal["a:0"] == 1.0
-    assert result.terminal["b:0"] == -1.0
-    assert result.combined["infra:0"] == 0.0
-    assert result.invalid_keys == ("infra:0",)
+def test_clipping_is_after_normalization_and_auditable():
+    result = advantages(example_rows(),max_advantage=1)
+    assert result.raw_combined['a:0'] > 1
+    assert result.combined['a:0'] == 1
+    assert result.metrics.clipped_turn_count == 5
 
 
-def test_combined_advantage_records_raw_value_and_clipping() -> None:
-    result = advantages(
-        (row("a", 0, 1.0, 1.0), row("b", 0, 0.0, 0.0)),
-        lambda_process=10.0,
-        max_advantage=2.0,
-    )
-    assert result.raw_combined == pytest.approx({"a:0": 3.0, "b:0": -3.0})
-    assert result.combined == {"a:0": 2.0, "b:0": -2.0}
-    assert result.metrics.clipped_turn_count == 2
+def test_near_constant_rewards_do_not_amplify_roundoff():
+    result=advantages([row('a',0,.5,.5),row('b',0,.5+1e-10,.5)])
+    assert result.combined == {'a:0':0,'b:0':0}
 
 
 @pytest.mark.parametrize(

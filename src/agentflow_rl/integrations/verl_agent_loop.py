@@ -208,6 +208,7 @@ class UnifiedVerlAgentLoop(AgentLoopBase):
                 task=envelope.public,
                 trajectory_id=trajectory_id,
                 turn=turn,
+                max_turns=self.runtime_bundle.loop.max_turns,
             )
             for turn in result.turns
         )

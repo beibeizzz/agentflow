@@ -24,8 +24,8 @@ fixed:
   gspo_clip_high: 0.0004
   kl_coefficient: 0.0
   ppo_epochs: 1
-  advantage_revision: terminal_prm_rtg_loo_v1
-  lambda_process: 0.30
+  advantage_revision: terminal_broadcast_mixed_turn_grpo_v1
+  lambda_process: 0.5
   max_prompt_tokens: 4096
   max_output_tokens: 1024
   direct_enable_thinking: true

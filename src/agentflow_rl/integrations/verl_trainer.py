@@ -91,8 +91,8 @@ def advantage_diagnostic_metrics(
         f"agentflow/{scope}_prm_score_available_turn_count": float(
             sum(row.process_score is not None for row in valid_rows)
         ),
-        f"agentflow/{scope}_process_rtg_available_turn_count": float(
-            sum(result.process_return[row.key] is not None for row in valid_rows)
+        f"agentflow/{scope}_process_value_available_turn_count": float(
+            sum(result.process_value[row.key] is not None for row in valid_rows)
         ),
         f"agentflow/{scope}_raw_prm_score_mean": mean(
             [
@@ -101,11 +101,11 @@ def advantage_diagnostic_metrics(
                 if row.process_score is not None
             ]
         ),
-        f"agentflow/{scope}_process_rtg_mean": mean(
+        f"agentflow/{scope}_process_value_mean": mean(
             [
-                float(result.process_return[row.key])
+                float(result.process_value[row.key])
                 for row in valid_rows
-                if result.process_return[row.key] is not None
+                if result.process_value[row.key] is not None
             ]
         ),
         f"agentflow/{scope}_terminal_advantage_mean": mean(
@@ -123,7 +123,7 @@ def advantage_diagnostic_metrics(
         f"agentflow/{scope}_final_advantage_mean": mean(
             [result.combined[row.key] for row in valid_rows]
         ),
-        f"agentflow/{scope}_process_rtg_complete_group_count": float(
+        f"agentflow/{scope}_process_value_complete_group_count": float(
             len(
                 {
                     row.group_id
@@ -132,7 +132,7 @@ def advantage_diagnostic_metrics(
                 }
             )
         ),
-        f"agentflow/{scope}_process_rtg_fallback_group_count": float(
+        f"agentflow/{scope}_process_value_fallback_group_count": float(
             len(
                 {
                     row.group_id
@@ -148,10 +148,10 @@ def advantage_diagnostic_metrics(
         metrics[f"agentflow/{scope}_prm_score_available_{task.value}"] = float(
             sum(row.process_score is not None for row in task_rows)
         )
-        metrics[f"agentflow/{scope}_process_rtg_available_{task.value}"] = float(
-            sum(result.process_return[row.key] is not None for row in task_rows)
+        metrics[f"agentflow/{scope}_process_value_available_{task.value}"] = float(
+            sum(result.process_value[row.key] is not None for row in task_rows)
         )
-        metrics[f"agentflow/{scope}_process_rtg_complete_groups_{task.value}"] = float(
+        metrics[f"agentflow/{scope}_process_value_complete_groups_{task.value}"] = float(
             len(
                 {
                     row.group_id
@@ -190,13 +190,14 @@ def advantage_audit_records(
             "lambda_process": lambda_process,
             "terminal_reward": row.terminal_reward,
             "raw_process_score": result.raw_process_score[row.key],
-            "process_return": result.process_return[row.key],
-            "total_return": result.total_return[row.key],
-            "trajectory_utility": result.trajectory_utility.get(
-                (row.group_id, row.trajectory_id)
-            ),
-            "terminal_baseline": result.terminal_baseline[row.key],
-            "process_baseline": result.process_baseline[row.key],
+            "process_value": result.process_value[row.key],
+            "mixed_reward": result.mixed_reward[row.key],
+            "normalization_mean": result.normalization_mean[row.key],
+            "normalization_std": result.normalization_std[row.key],
+            "normalization_scope": result.normalization_scope[row.key],
+            "terminal_reference_advantage": result.terminal_reference[row.key],
+            "terminal_mean": result.terminal_mean[row.key],
+            "process_mean": result.process_mean[row.key],
             "terminal_advantage": result.terminal[row.key],
             "process_advantage": result.process[row.key],
             "weighted_process_advantage": result.weighted_process[row.key],
@@ -523,10 +524,10 @@ def build_training_selection(
         }
     )
     for task in (TaskName.AIME, TaskName.TWOWIKI, TaskName.TACO):
-        metrics[f"agentflow/process_rtg_complete_groups_{task.value}"] = float(
+        metrics[f"agentflow/process_value_complete_groups_{task.value}"] = float(
             result.process_complete_groups_by_task[task]
         )
-        metrics[f"agentflow/process_rtg_fallback_groups_{task.value}"] = float(
+        metrics[f"agentflow/process_value_fallback_groups_{task.value}"] = float(
             result.process_fallback_groups_by_task[task]
         )
 
@@ -653,7 +654,7 @@ def validate_advantage_state_identity(
     missing = [key for key in expected if key not in state]
     if missing:
         raise RuntimeError(
-            "checkpoint lacks RTG+LOO advantage identity fields "
+            "checkpoint lacks GRPO advantage identity fields "
             f"{missing}; initialize a new experiment from the Planner weights"
         )
     mismatches = {
